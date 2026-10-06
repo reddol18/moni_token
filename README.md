@@ -95,9 +95,12 @@ the solid "measured" line and calibrates the estimate automatically. Add this to
 ```json
 "statusLine": {
   "type": "command",
-  "command": "C:\\path\\to\\moni_token\\.venv\\Scripts\\moni-token-statusline.exe"
+  "command": "C:/path/to/moni_token/.venv/Scripts/moni-token-statusline.exe"
 }
 ```
+
+Use forward slashes. On Windows, Claude Code runs this command through Git Bash, which drops backslashes, so a
+`C:\\path\\...` command silently never runs.
 
 The status line then shows something like `5h 12% ~15:06 · ctx 40%`. If you already have a status line command,
 keep it and wrap it: `moni-token-statusline.exe --wrap "<your old command>"`.

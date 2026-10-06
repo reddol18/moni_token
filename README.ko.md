@@ -93,9 +93,12 @@ Claude Code는 상태줄 명령에 실제 한도 %를 넘겨 줍니다. moni_tok
 ```json
 "statusLine": {
   "type": "command",
-  "command": "C:\\path\\to\\moni_token\\.venv\\Scripts\\moni-token-statusline.exe"
+  "command": "C:/path/to/moni_token/.venv/Scripts/moni-token-statusline.exe"
 }
 ```
+
+경로는 반드시 슬래시(`/`)로 쓰세요. Windows에서 Claude Code는 이 명령을 Git Bash로 실행하는데, Git Bash가 역슬래시를
+지워 버려서 `C:\\path\\...`로 쓰면 아무 오류 없이 실행되지 않습니다.
 
 상태줄에는 `5h 12% ~15:06 · ctx 40%` 같은 내용이 나옵니다. 이미 쓰는 상태줄 명령이 있으면 그대로 두고 감싸면 됩니다:
 `moni-token-statusline.exe --wrap "<기존 명령>"`. 기록은 다음에 새로 여는 Claude Code 세션부터 쌓입니다.
