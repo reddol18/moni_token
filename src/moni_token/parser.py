@@ -15,9 +15,11 @@ class FileState:
     result_bytes: int = 0
     result_image: bool = False
     attach_bytes: int = 0
+    results: list | None = None   # [[tool_use_id, bytes, image], ...] — sizes of each tool result, no content
 
     def reset(self) -> None:
         self.trigger, self.result_bytes, self.result_image, self.attach_bytes = None, 0, False, 0
+        self.results = []
 
 
 def ts_to_ms(ts: str) -> int:
@@ -41,8 +43,12 @@ def _observe_user(d: dict, state: FileState) -> None:
         results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
         if results:
             for b in results:
-                state.result_bytes += _content_bytes(b.get("content", ""))
-                state.result_image = state.result_image or _has_image(b.get("content"))
+                size, img = _content_bytes(b.get("content", "")), _has_image(b.get("content"))
+                state.result_bytes += size
+                state.result_image = state.result_image or img
+                if state.results is None:
+                    state.results = []
+                state.results.append([str(b.get("tool_use_id") or ""), size, int(img)])
             if state.trigger != "human":
                 state.trigger = "tool_result"
             return
@@ -101,7 +107,7 @@ def quota_observation(d: dict) -> dict | None:
 
 
 def process_line(raw: bytes, project_dir: str, state: FileState, last_msg_id: list,
-                 quota_sink: list | None = None) -> tuple[dict, list] | None:
+                 quota_sink: list | None = None, compact_sink: list | None = None) -> tuple[dict, list] | None:
     """Feed one raw line. Returns a call record for assistant lines, else updates state.
 
     `last_msg_id` is a 1-element list: continuation lines of the same response must not consume the
@@ -122,6 +128,9 @@ def process_line(raw: bytes, project_dir: str, state: FileState, last_msg_id: li
     if t == "attachment":
         state.attach_bytes += len(raw)
         return None
+    if t == "system" and d.get("subtype") == "compact_boundary" and compact_sink is not None and d.get("timestamp"):
+        compact_sink.append(dict(session_id=d.get("sessionId"), agent_id=d.get("agentId"), ts_ms=ts_to_ms(d["timestamp"])))
+        return None
     if t != "assistant":
         return None
     rec = call_record(d, project_dir, state)
@@ -129,5 +138,8 @@ def process_line(raw: bytes, project_dir: str, state: FileState, last_msg_id: li
         return None
     if rec[0]["msg_id"] != last_msg_id[0]:
         last_msg_id[0] = rec[0]["msg_id"]
+        rec[0]["_results"] = list(state.results or [])
         state.reset()
+    else:
+        rec[0]["_results"] = []
     return rec

@@ -81,6 +81,16 @@ def test_manual_calibration_survives_schema_rebuild(tmp_path):
     assert con.execute("SELECT pct FROM calib_manual").fetchall() == [(5.0,)]
 
 
+def test_usage_readings_survive_schema_rebuild_but_derived_obs_do_not(tmp_path):
+    from moni_token.calibrate import add_usage_reading
+    con = connect(tmp_path / "u.db")
+    add_usage_reading(con, "five_hour", 49.0, T0 + 5 * H, T0)
+    con.execute("INSERT INTO limit_obs VALUES (?,?,?,?,?,?)", (T0, "statusline", "five_hour", T0 + 5 * H, "", 10.0))
+    con.execute("PRAGMA user_version = 1"); con.commit(); con.close()
+    con = connect(tmp_path / "u.db")
+    assert con.execute("SELECT source, used_pct FROM limit_obs").fetchall() == [("usage", 49.0)]
+
+
 def test_check_logs_run_cost(home, logs, monkeypatch):
     from moni_token import alerts
     from moni_token.cli import main

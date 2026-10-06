@@ -1,4 +1,5 @@
 """Incremental, read-only collection of Claude Code logs into SQLite (ADR-0001)."""
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,12 +40,12 @@ def collect_file(con: sqlite3.Connection, path: Path, projects: Path, stats: Col
     st = path.stat()
     key = str(path)
     row = con.execute("SELECT size, mtime, offset, pending_trigger, pending_result_bytes, pending_result_image, "
-                      "pending_attach_bytes, last_msg_id FROM files WHERE path=?", (key,)).fetchone()
+                      "pending_attach_bytes, last_msg_id, pending_results_json FROM files WHERE path=?", (key,)).fetchone()
     state = FileState()
     last = [None]
     offset = 0
     if row:
-        size, mtime, offset, *pend, last_id = row
+        size, mtime, offset, *pend, last_id, pend_results = row
         if st.st_size == size and st.st_mtime == mtime:
             return
         if st.st_size < offset:  # replaced or truncated: start over (dedupe makes it safe)
@@ -52,9 +53,11 @@ def collect_file(con: sqlite3.Connection, path: Path, projects: Path, stats: Col
         else:
             state.trigger, state.result_bytes, state.result_image, state.attach_bytes = pend[0], pend[1], bool(pend[2]), pend[3]
             last[0] = last_id
+            state.results = json.loads(pend_results) if pend_results else []
     project_dir = path.relative_to(projects).parts[0]
     stats.files_read += 1
     quotas: list[dict] = []
+    compactions: list[dict] = []
     with open(path, "rb") as fh:  # read-only, never modified
         fh.seek(offset)
         for raw in fh:
@@ -62,7 +65,7 @@ def collect_file(con: sqlite3.Connection, path: Path, projects: Path, stats: Col
                 break
             offset += len(raw)
             stats.lines += 1
-            rec = process_line(raw, project_dir, state, last, quotas)
+            rec = process_line(raw, project_dir, state, last, quotas, compactions)
             if rec is None:
                 continue
             call, tools = rec
@@ -73,12 +76,17 @@ def collect_file(con: sqlite3.Connection, path: Path, projects: Path, stats: Col
             if tools:
                 con.executemany("INSERT OR IGNORE INTO call_tools VALUES (?,?,?)",
                                 [(call["msg_id"], tid, name) for tid, name in tools])
+            if call["_results"]:
+                con.executemany("INSERT OR IGNORE INTO tool_results VALUES (?,?,?,?)",
+                                [(tid or f"{call['msg_id']}#{i}", call["msg_id"], size, img)
+                                 for i, (tid, size, img) in enumerate(call["_results"])])
+    con.executemany("INSERT OR IGNORE INTO compactions VALUES (:session_id, :agent_id, :ts_ms)", compactions)
     con.executemany("INSERT OR IGNORE INTO limit_obs (ts_ms, source, kind, resets_at_ms, status) "
                     "VALUES (:ts_ms, :source, :kind, :resets_at_ms, :status)", quotas)
     stats.bytes_read += offset - (row[2] if row and st.st_size >= row[2] else 0)
-    con.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?,?)",
+    con.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (key, st.st_size, st.st_mtime, offset, state.trigger, state.result_bytes,
-                 int(state.result_image), state.attach_bytes, last[0]))
+                 int(state.result_image), state.attach_bytes, last[0], json.dumps(state.results or [])))
 
 
 def collect(con: sqlite3.Connection, projects: Path) -> CollectStats:

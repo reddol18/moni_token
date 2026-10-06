@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS files (
     pending_result_bytes INTEGER NOT NULL DEFAULT 0,
     pending_result_image INTEGER NOT NULL DEFAULT 0,
     pending_attach_bytes INTEGER NOT NULL DEFAULT 0,
-    last_msg_id TEXT
+    last_msg_id TEXT,
+    pending_results_json TEXT
 );
 CREATE TABLE IF NOT EXISTS calls (
     msg_id TEXT PRIMARY KEY,
@@ -98,6 +99,20 @@ CREATE TABLE IF NOT EXISTS calib_manual (
     created_ms INTEGER NOT NULL,
     PRIMARY KEY (start_ms, end_ms)
 );
+-- each tool result's size, and the call that first carried it to the API (no content)
+CREATE TABLE IF NOT EXISTS tool_results (
+    tool_use_id TEXT PRIMARY KEY,
+    msg_id TEXT NOT NULL,        -- consuming call
+    bytes INTEGER NOT NULL,
+    image INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tool_results_msg ON tool_results(msg_id);
+CREATE TABLE IF NOT EXISTS compactions (
+    session_id TEXT,
+    agent_id TEXT,
+    ts_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_id, ts_ms)
+);
 CREATE TABLE IF NOT EXISTS call_tools (
     msg_id TEXT NOT NULL,
     tool_use_id TEXT NOT NULL,
@@ -107,8 +122,9 @@ CREATE TABLE IF NOT EXISTS call_tools (
 """
 
 
-SCHEMA_VERSION = 5
-PRESERVE = ("calib_manual",)
+SCHEMA_VERSION = 6
+# user input cannot be rebuilt from the logs: kept across schema rebuilds
+PRESERVE = {"calib_manual": "1=1", "limit_obs": "source IN ('usage', 'manual')"}
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -122,9 +138,9 @@ def connect(path: Path | str) -> sqlite3.Connection:
     kept: dict[str, list] = {}
     if ver != SCHEMA_VERSION:
         tables = [n for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        for name in PRESERVE:   # user input cannot be rebuilt from the logs
+        for name, where in PRESERVE.items():
             if name in tables:
-                kept[name] = con.execute(f'SELECT * FROM "{name}"').fetchall()
+                kept[name] = con.execute(f'SELECT * FROM "{name}" WHERE {where}').fetchall()
         for name in tables:
             con.execute(f'DROP TABLE "{name}"')
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

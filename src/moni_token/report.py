@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import config
 from .calibrate import estimate
+from .chunks import analyze_chunks
 from .events import list_events
 from .summary import _pp, best_alternative, digest, event_summary
 from .pctseries import pct_at, series
@@ -75,11 +76,12 @@ def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7) -> dict:
     events = report_events(con, start, with_calls=True)
     main = [e for e in events if e["kind"] == "pct"] or [e for e in events if e["kind"] == "rate"]
     dg = digest(main, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"])
+    ch = analyze_chunks(con, start, now_ms)
     try:
         seen = json.loads((config.data_dir() / "statusline.seen").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         seen = None
-    return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen, digest=dg)
+    return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen, digest=dg, chunks=ch)
 
 
 def render(data: dict) -> str:
@@ -146,6 +148,8 @@ details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.t
 <div class="tiles" id="tiles"></div>
 <h2>절약 요약 (최근 7일)</h2>
 <div class="card" id="digest"></div>
+<h2>큰 덩어리 전달 (최근 7일)</h2>
+<div class="card scroll" id="chunks"></div>
 <h2>현재 세션 (5시간 한도)<span class="range" id="r5"></span></h2>
 <div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정(로그 ÷ 보정)</span>
 <span><i class="bandk"></i> 급상승 사건</span><span id="cal5"></span></div><div class="chart" id="c5"></div></div>
@@ -221,6 +225,10 @@ const pctEvents=D.events.filter(e=>e.kind==='pct'||e.kind==='cache_write');
 function draw(){line('#c5',F,D.end-r5,pctEvents);line('#c7',W,D.start,null)}
 
 const G=D.digest;$('#digest').innerHTML=`<p style="margin:0 0 8px">${esc(G.headline)}</p>`+(G.items.length?'<table class="tl"><tr><th>원인</th><th class="n">사건</th><th class="n">절약 가능</th><th>대안</th></tr>'+G.items.map(d=>`<tr><td>${esc(d.label)}</td><td class="n">${d.events}</td><td class="n">≈ ${d.pp.toFixed(1)}%p</td><td>${esc(d.advice)}<div class="note">${esc(d.alternative)}</div></td></tr>`).join('')+'</table>':'');
+
+const C=D.chunks,CO=C.overall;$('#chunks').innerHTML=`<p style="margin:0 0 8px">도구 결과가 결론이 아니라 ${C.min_tokens.toLocaleString()}토큰 이상 덩어리로 전달된 경우: ${CO.chunks}건, 끌고 다닌 양이 전체 토큰의 <b>${(CO.token_share*100).toFixed(1)}%</b> (비용 가중 ${(CO.cost_share*100).toFixed(1)}%)</p>`+
+ '<table class="tl"><tr><th>에이전트</th><th class="n">호출</th><th class="n">덩어리</th><th class="n">100호출당</th><th class="n">중앙값(토큰)</th><th class="n">토큰 비중</th><th class="n">비용 비중</th><th>주된 출처</th></tr>'+
+ C.agents.filter(g=>g.chunks).map(g=>`<tr><td><span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)}</td><td class="n">${g.calls}</td><td class="n">${g.chunks}</td><td class="n">${g.per_100_calls}</td><td class="n">${g.median_chunk.toLocaleString()}</td><td class="n">${(g.token_share*100).toFixed(1)}%</td><td class="n">${(g.cost_share*100).toFixed(1)}%</td><td>${g.categories.slice(0,3).map(c=>esc(c.category)+' '+c.chunks+'건').join(', ')}</td></tr>`).join('')+'</table><p class="note">크기는 받은 호출의 컨텍스트 증가분으로 잰 실측 토큰. 끌고 다닌 양 = 크기 × (1 + 같은 대화에서 이후 호출 수, compact 전까지). 비용 비중은 캐시 쓰기 1.25~2배·읽기 0.1배 가중.</p>';
 
 // events
 const tb=$('#events tbody');

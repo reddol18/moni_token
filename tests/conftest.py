@@ -46,12 +46,12 @@ class LogBuilder:
         return {"type": "user", "uuid": self._uuid(), "timestamp": ts, "sessionId": session,
                 "message": {"role": "user", "content": text}}
 
-    def tool_result(self, ts, payload: str, session="s1", image=False):
+    def tool_result(self, ts, payload: str, session="s1", image=False, tool_use_id="x"):
         content = [{"type": "text", "text": payload}]
         if image:
             content.append({"type": "image", "source": {"type": "base64", "data": "AAAA"}})
         return {"type": "user", "uuid": self._uuid(), "timestamp": ts, "sessionId": session,
-                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": content}]},
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content}]},
                 "toolUseResult": {"stdout": SECRET}}
 
     def write(self, path: Path, *records, mode="a"):

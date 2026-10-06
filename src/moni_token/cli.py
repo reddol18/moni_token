@@ -11,6 +11,7 @@ from .alerts import check_and_notify, render
 from .analysis import analyze
 from .blocks import compute_blocks, status
 from .calibrate import add_manual, add_usage_reading, estimate, ingest_statusline
+from .chunks import analyze_chunks
 from .collector import collect
 from .db import connect
 from .events import list_events, record, record_spike
@@ -66,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("events", help="recorded incidents")
     p.add_argument("--since", help="YYYY-MM-DD (local)")
+    p = sub.add_parser("chunks", help="raw chunks shipped to the API per agent, and their share of tokens")
+    p.add_argument("--days", type=int, default=7)
+    p.add_argument("--min-tokens", type=int, default=5000, help="a tool result this big counts as a raw chunk")
     p = sub.add_parser("savings", help="what could have been saved, by cause (default: last 7 days)")
     p.add_argument("--since", help="YYYY-MM-DD (local)")
     p = sub.add_parser("backfill-events", help="detect and record past spikes (no notifications)")
@@ -184,6 +188,18 @@ def main(argv: list[str] | None = None) -> int:
             rise = f" +{e['rise']}%p" if e.get("rise") else ""
             print(f"#{e['id']} {fmt(e['start'])}~{fmt(e['end'])} [{e['kind']}{rise}] {e['headline']}")
             print(f"    절약: {e['summary']}")
+    elif a.cmd == "chunks":
+        r = analyze_chunks(con, now_ms() - a.days * 86_400_000, now_ms(), a.min_tokens)
+        o = r["overall"]
+        print(f"최근 {a.days}일, 도구 결과 {a.min_tokens:,}토큰 이상을 '큰 덩어리'로 집계: 전체 {o['chunks']}건, "
+              f"전체 토큰의 {o['token_share']:.1%} (비용 가중 {o['cost_share']:.1%})")
+        print(f"{'에이전트':<18}{'호출':>7}{'덩어리':>7}{'/100호출':>9}{'중앙값':>9}{'토큰%':>8}{'비용%':>8}  주된 출처")
+        for g in r["agents"]:
+            if not g["chunks"]:
+                continue
+            top = ", ".join(f"{c['category']} {c['chunks']}건" for c in g["categories"][:3])
+            print(f"{g['project'][:17]:<18}{g['calls']:>7}{g['chunks']:>7}{g['per_100_calls']:>9}{g['median_chunk']:>9,}"
+                  f"{g['token_share']:>8.1%}{g['cost_share']:>8.1%}  {top}")
     elif a.cmd == "savings":
         evs = [e for e in report_events(con, day_ms(a.since) if a.since else now_ms() - 7 * 86_400_000)
                if e["kind"] == "pct"]
