@@ -11,6 +11,7 @@ from dataclasses import asdict
 from .alerts import check_and_notify, render
 from .analysis import analyze
 from .events import list_events, record, record_spike
+from .report import write_report
 from .blocks import compute_blocks, status
 from .collector import collect
 from .db import connect
@@ -47,7 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--since", help="YYYY-MM-DD (local)")
     p.add_argument("--until", help="YYYY-MM-DD (local, exclusive)")
     p.add_argument("--all", action="store_true", help="show every hit, without re-alert suppression")
-    sub.add_parser("check", help="collect, then notify about new spikes (for the scheduled task)")
+    sub.add_parser("check", help="collect, notify about new spikes, refresh the HTML report (for the scheduled task)")
+    p = sub.add_parser("report", help="write the static HTML report (~/.moni_token/report.html)")
+    p.add_argument("--days", type=int, default=7)
+    p.add_argument("--out", type=Path)
     p = sub.add_parser("analyze", help="explain a window you choose, e.g. --from '2026-10-06 12:31' --to '2026-10-06 12:56'")
     p.add_argument("--from", dest="frm", required=True)
     p.add_argument("--to", required=True)
@@ -102,6 +106,9 @@ def main(argv: list[str] | None = None) -> int:
         collect(con, a.projects or config.claude_projects_dir())
         for s in check_and_notify(con, now_ms(), load_spike_params()):
             print(" / ".join(render(s)))
+        write_report(con, config.data_dir() / "report.html")
+    elif a.cmd == "report":
+        print(write_report(con, a.out or config.data_dir() / "report.html", days=a.days))
     elif a.cmd == "analyze":
         an = analyze(con, local_ms(a.frm), local_ms(a.to))
         if a.save:
