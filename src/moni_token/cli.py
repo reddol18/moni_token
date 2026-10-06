@@ -2,21 +2,27 @@
 import argparse
 import json
 import time
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 from . import config
-from dataclasses import asdict
-
 from .alerts import check_and_notify, render
 from .analysis import analyze
-from .events import list_events, record, record_spike
-from .report import write_report
 from .blocks import compute_blocks, status
+from .calibrate import add_manual, estimate, ingest_statusline
 from .collector import collect
 from .db import connect
+from .events import list_events, record, record_spike
+from .report import write_report
 from .settings import load_spike_params
 from .spikes import cache_write_spikes, detect, merge_runs, rate_spikes, suggest_floor
+
+
+def collect_all(con, projects):
+    s = collect(con, projects)
+    ingest_statusline(con, config.data_dir() / "statusline.jsonl")
+    return s
 
 
 def daily_totals(con, since: str | None = None) -> list[dict]:
@@ -62,12 +68,21 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("backfill-events", help="detect and record past spikes (no notifications)")
     p.add_argument("--since", help="YYYY-MM-DD (local)")
     sub.add_parser("suggest-floor", help="data-driven candidate for spike.floor_usd (p75 of active 15-min windows, 7 days)")
+    p = sub.add_parser("calibrate", help="add an observed limit usage (e.g. --from '2026-10-06 15:06' --to '2026-10-06 15:56' --pct 5) or show the estimate")
+    p.add_argument("--from", dest="frm")
+    p.add_argument("--to")
+    p.add_argument("--pct", type=float)
+    p = sub.add_parser("statusline", help="status line command for Claude Code (records numbers only)")
+    p.add_argument("--wrap", help="previous status line command to run and display")
     a = ap.parse_args(argv)
 
+    if a.cmd == "statusline":   # hot path: no database
+        from .statusline import main as sl_main
+        return sl_main(["--wrap", a.wrap] if a.wrap else [])
     con = connect(a.db or config.db_path())
     if a.cmd == "collect":
         t0 = time.perf_counter()
-        s = collect(con, a.projects or config.claude_projects_dir())
+        s = collect_all(con, a.projects or config.claude_projects_dir())
         print(f"files {s.files_seen} (read {s.files_read}), lines {s.lines}, call lines {s.call_lines}, "
               f"{s.bytes_read / 1e6:.1f} MB in {time.perf_counter() - t0:.1f}s")
     elif a.cmd == "daily":
@@ -87,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
                   f"{b['calls']} calls, projected ${b['projected_usd']:.2f} at window end")
         else:
             print("no active 5h window")
+        e = estimate(con)
+        if e and e["usd_per_pct"]:
+            print(f"calibration: 1% of 5h limit ~ ${e['usd_per_pct']:.2f} (IQR ${e['q1']:.2f}~${e['q3']:.2f}, n={e['n']})")
+        else:
+            print(f"calibration: {e['n'] if e else 0} samples (need 3)")
     elif a.cmd == "blocks":
         for b in compute_blocks(con, day_ms(a.since) if a.since else 0):
             print(f"{fmt(b.start_ms)} ~ {fmt(b.end_ms)}  {b.source:9}  ${b.usd:>8.2f}  calls {b.calls}")
@@ -103,10 +123,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{fmt(s.start_ms)} ~ {fmt(s.end_ms)}  {s.kind:11} ${s.usd:>7.2f}  base ${s.baseline_usd:.2f} "
                   f"{ratio:>6}  {s.scope[:8]}  {json.dumps(s.evidence)}")
     elif a.cmd == "check":
-        collect(con, a.projects or config.claude_projects_dir())
+        t0, c0 = time.perf_counter(), time.process_time()
+        collect_all(con, a.projects or config.claude_projects_dir())
         for s in check_and_notify(con, now_ms(), load_spike_params()):
             print(" / ".join(render(s)))
         write_report(con, config.data_dir() / "report.html")
+        with open(config.data_dir() / "runs.jsonl", "a", encoding="utf-8") as f:   # M5: resident cost
+            f.write(json.dumps(dict(ts_ms=now_ms(), wall_ms=round((time.perf_counter() - t0) * 1000),
+                                    cpu_ms=round((time.process_time() - c0) * 1000))) + "\n")
+    elif a.cmd == "calibrate":
+        if a.frm and a.to and a.pct:
+            s = add_manual(con, local_ms(a.frm), local_ms(a.to), a.pct, now_ms())
+            print(f"saved: {a.frm} ~ {a.to}  {a.pct}%  = ${s['usd']:.2f} in local logs -> ${s['usd'] / a.pct:.2f} per 1%")
+        e = estimate(con)
+        for s in e["samples"]:
+            print(f"  {fmt(s['start_ms'])}~{fmt(s['end_ms'])} {s['source']:10} {s['pct']:.1f}%  ${s['usd']:.2f}")
+        print(f"estimate: ${e['usd_per_pct']:.2f} per 1% (n={e['n']})" if e["usd_per_pct"]
+              else f"estimate: need {3 - e['n']} more sample(s)")
     elif a.cmd == "report":
         print(write_report(con, a.out or config.data_dir() / "report.html", days=a.days))
     elif a.cmd == "analyze":

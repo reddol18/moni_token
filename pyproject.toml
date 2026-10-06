@@ -9,6 +9,7 @@ dependencies = []
 
 [project.scripts]
 moni-token = "moni_token.cli:main"
+moni-token-statusline = "moni_token.statusline:main"   # fast path for Claude Code's statusLine
 
 [dependency-groups]
 dev = ["pytest>=8"]

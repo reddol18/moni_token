@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS events (
     note TEXT,
     UNIQUE (kind, start_ms, end_ms)
 );
+-- user-observed limit usage, e.g. "15:06~15:56 used 5%"
+CREATE TABLE IF NOT EXISTS calib_manual (
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    pct REAL NOT NULL,
+    created_ms INTEGER NOT NULL,
+    PRIMARY KEY (start_ms, end_ms)
+);
 CREATE TABLE IF NOT EXISTS call_tools (
     msg_id TEXT NOT NULL,
     tool_use_id TEXT NOT NULL,
@@ -98,7 +106,8 @@ CREATE TABLE IF NOT EXISTS call_tools (
 """
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+PRESERVE = ("calib_manual",)
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -109,9 +118,18 @@ def connect(path: Path | str) -> sqlite3.Connection:
     con = sqlite3.connect(path)
     con.execute("PRAGMA journal_mode=WAL")
     (ver,) = con.execute("PRAGMA user_version").fetchone()
+    kept: dict[str, list] = {}
     if ver != SCHEMA_VERSION:
-        for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        tables = [n for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        for name in PRESERVE:   # user input cannot be rebuilt from the logs
+            if name in tables:
+                kept[name] = con.execute(f'SELECT * FROM "{name}"').fetchall()
+        for name in tables:
             con.execute(f'DROP TABLE "{name}"')
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.executescript(SCHEMA)
+    for name, rows in kept.items():
+        if rows:
+            con.executemany(f'INSERT OR IGNORE INTO "{name}" VALUES ({",".join("?" * len(rows[0]))})', rows)
+    con.commit()
     return con
