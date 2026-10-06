@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS calls (
     ts_ms INTEGER NOT NULL,      -- epoch milliseconds
     session_id TEXT,
     project_dir TEXT NOT NULL,
+    project TEXT,                -- last folder name of the logged cwd (display only)
     agent_id TEXT,
     is_sidechain INTEGER NOT NULL,
     entrypoint TEXT,
@@ -41,6 +42,36 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS calls_ts ON calls(ts_ms);
 CREATE INDEX IF NOT EXISTS calls_session ON calls(session_id, ts_ms);
+-- known 5-hour/weekly window resets: from logs (quotaLimits), statusline recorder, or manual input
+CREATE TABLE IF NOT EXISTS limit_obs (
+    ts_ms INTEGER NOT NULL,
+    source TEXT NOT NULL,        -- log | statusline | manual
+    kind TEXT NOT NULL,          -- five_hour | seven_day | ...
+    resets_at_ms INTEGER NOT NULL,
+    status TEXT,
+    used_pct REAL,
+    PRIMARY KEY (source, kind, resets_at_ms, ts_ms)
+);
+-- 5-minute aggregates in usage units (list-price USD)
+CREATE TABLE IF NOT EXISTS buckets (
+    t5_ms INTEGER NOT NULL,
+    project_dir TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    calls INTEGER NOT NULL,
+    input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL,
+    cache_5m INTEGER NOT NULL, cache_1h INTEGER NOT NULL,
+    usd REAL NOT NULL,
+    sidechain_calls INTEGER NOT NULL,
+    PRIMARY KEY (t5_ms, project_dir, session_id)
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    start_ms INTEGER NOT NULL,
+    alerted_ms INTEGER NOT NULL,
+    delivered INTEGER NOT NULL,
+    PRIMARY KEY (kind, scope, start_ms)
+);
 CREATE TABLE IF NOT EXISTS call_tools (
     msg_id TEXT NOT NULL,
     tool_use_id TEXT NOT NULL,
@@ -50,10 +81,20 @@ CREATE TABLE IF NOT EXISTS call_tools (
 """
 
 
+SCHEMA_VERSION = 2
+
+
 def connect(path: Path | str) -> sqlite3.Connection:
+    """Open the DB. Everything in it is derived from the logs, so a schema change simply rebuilds it
+    (the next `collect` re-reads the logs from offset 0)."""
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.execute("PRAGMA journal_mode=WAL")
+    (ver,) = con.execute("PRAGMA user_version").fetchone()
+    if ver != SCHEMA_VERSION:
+        for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            con.execute(f'DROP TABLE "{name}"')
+        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.executescript(SCHEMA)
     return con

@@ -1,0 +1,60 @@
+# API list prices, USD per million tokens. Bundled; never fetched at runtime (ADR-0002).
+# verified = true  -> reproduced exactly from Claude Code's own `cost-state` records in local logs (2026-10-07)
+# verified = false -> input price fitted from cost-state, output assumed 5x input (Anthropic's usual ratio); revisit
+#
+# Multipliers on the model's input price: cache read 0.1x, cache write 5m 1.25x, cache write 1h 2x.
+
+[multipliers]
+cache_read = 0.1
+cache_write_5m = 1.25
+cache_write_1h = 2.0
+
+[web_search]
+usd_per_request = 0.01   # verified: $10 / 1k requests (haiku-4-5 cost-state fit)
+
+[models.claude-haiku-4-5]
+input = 1.0
+output = 5.0
+verified = true
+
+[models.claude-sonnet-5]
+input = 2.0
+output = 10.0
+verified = true
+
+[models.claude-sonnet-5-5]
+input = 2.0
+output = 10.0
+verified = false   # only 3 cost-state samples; consistent with sonnet-5
+
+[models.claude-opus-4-7]
+input = 5.0
+output = 25.0
+verified = false
+
+[models.claude-opus-4-8]
+input = 5.0
+output = 25.0
+verified = false
+
+[models.claude-opus-5]
+input = 5.0
+output = 25.0
+verified = false
+
+[models.claude-opus-5-5]
+input = 5.0
+output = 25.0
+verified = false   # cost-state fit unstable (n=15); see docs/reports/0003-m2.md
+
+[models.claude-fable-5-1]
+input = 10.0
+output = 50.0
+verified = false   # no local samples
+
+# family fallback for unknown model ids (marked price_estimated)
+[families]
+haiku = "claude-haiku-4-5"
+sonnet = "claude-sonnet-5"
+opus = "claude-opus-5"
+fable = "claude-fable-5-1"

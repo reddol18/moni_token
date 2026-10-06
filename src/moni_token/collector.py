@@ -3,6 +3,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .buckets import rebuild_buckets
 from .parser import FileState, process_line
 
 UPSERT_CALL = """
@@ -11,7 +12,7 @@ ON CONFLICT(msg_id) DO UPDATE SET
     output = MAX(calls.output, excluded.output),
     stop_reason = COALESCE(excluded.stop_reason, calls.stop_reason)
 """
-CALL_COLS = ("msg_id ts ts_ms session_id project_dir agent_id is_sidechain entrypoint model input output "
+CALL_COLS = ("msg_id ts ts_ms session_id project_dir project agent_id is_sidechain entrypoint model input output "
              "cache_read cache_5m cache_1h thinking web_search_n web_fetch_n stop_reason trigger "
              "prev_result_bytes prev_result_image prev_attach_bytes").split()
 _UPSERT = UPSERT_CALL.format(cols=",".join(CALL_COLS), ph=",".join("?" * len(CALL_COLS)))
@@ -24,6 +25,7 @@ class CollectStats:
     bytes_read: int = 0
     lines: int = 0
     call_lines: int = 0
+    min_ts_ms: int | None = None   # earliest call touched — buckets are rebuilt from here
 
 
 def log_files(projects: Path) -> list[Path]:
@@ -52,6 +54,7 @@ def collect_file(con: sqlite3.Connection, path: Path, projects: Path, stats: Col
             last[0] = last_id
     project_dir = path.relative_to(projects).parts[0]
     stats.files_read += 1
+    quotas: list[dict] = []
     with open(path, "rb") as fh:  # read-only, never modified
         fh.seek(offset)
         for raw in fh:
@@ -59,15 +62,19 @@ def collect_file(con: sqlite3.Connection, path: Path, projects: Path, stats: Col
                 break
             offset += len(raw)
             stats.lines += 1
-            rec = process_line(raw, project_dir, state, last)
+            rec = process_line(raw, project_dir, state, last, quotas)
             if rec is None:
                 continue
             call, tools = rec
             stats.call_lines += 1
+            if stats.min_ts_ms is None or call["ts_ms"] < stats.min_ts_ms:
+                stats.min_ts_ms = call["ts_ms"]
             con.execute(_UPSERT, [call[c] for c in CALL_COLS])
             if tools:
                 con.executemany("INSERT OR IGNORE INTO call_tools VALUES (?,?,?)",
                                 [(call["msg_id"], tid, name) for tid, name in tools])
+    con.executemany("INSERT OR IGNORE INTO limit_obs (ts_ms, source, kind, resets_at_ms, status) "
+                    "VALUES (:ts_ms, :source, :kind, :resets_at_ms, :status)", quotas)
     stats.bytes_read += offset - (row[2] if row and st.st_size >= row[2] else 0)
     con.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?,?)",
                 (key, st.st_size, st.st_mtime, offset, state.trigger, state.result_bytes,
@@ -85,4 +92,6 @@ def collect(con: sqlite3.Connection, projects: Path) -> CollectStats:
         except OSError:
             continue  # file vanished or locked; retry next run
         con.commit()
+    if stats.min_ts_ms is not None:
+        rebuild_buckets(con, stats.min_ts_ms)
     return stats

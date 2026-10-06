@@ -3,6 +3,7 @@
 Only counts, sizes, ids and names leave this module; message text is read (to measure size) and dropped.
 """
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -70,7 +71,9 @@ def call_record(d: dict, project_dir: str, state: FileState) -> tuple[dict, list
     row = dict(
         msg_id=msg.get("id") or d.get("requestId") or d["uuid"],
         ts=ts, ts_ms=ts_to_ms(ts),
-        session_id=d.get("sessionId"), project_dir=project_dir, agent_id=d.get("agentId"),
+        session_id=d.get("sessionId"), project_dir=project_dir,
+        project=re.split(r"[\\/]", d["cwd"].rstrip("\\/"))[-1] if d.get("cwd") else None,
+        agent_id=d.get("agentId"),
         is_sidechain=int(bool(d.get("isSidechain"))), entrypoint=d.get("entrypoint"), model=model,
         input=usage.get("input_tokens", 0) or 0, output=usage.get("output_tokens", 0) or 0,
         cache_read=usage.get("cache_read_input_tokens", 0) or 0, cache_5m=c5 or 0, cache_1h=c1 or 0,
@@ -86,7 +89,19 @@ def call_record(d: dict, project_dir: str, state: FileState) -> tuple[dict, list
     return row, tools
 
 
-def process_line(raw: bytes, project_dir: str, state: FileState, last_msg_id: list) -> tuple[dict, list] | None:
+def quota_observation(d: dict) -> dict | None:
+    """`quotaLimits` (rare, on rate-limit responses) carries the real window reset time."""
+    q = d.get("quotaLimits")
+    if not isinstance(q, dict) or not isinstance(q.get("resetsAt"), (int, float)) or not d.get("timestamp"):
+        return None
+    r = q["resetsAt"]
+    return dict(ts_ms=ts_to_ms(d["timestamp"]), source="log",
+                kind=str(q.get("rateLimitType") or "unknown"),
+                resets_at_ms=int(r * 1000 if r < 1e12 else r), status=str(q.get("status") or ""))
+
+
+def process_line(raw: bytes, project_dir: str, state: FileState, last_msg_id: list,
+                 quota_sink: list | None = None) -> tuple[dict, list] | None:
     """Feed one raw line. Returns a call record for assistant lines, else updates state.
 
     `last_msg_id` is a 1-element list: continuation lines of the same response must not consume the
@@ -97,6 +112,10 @@ def process_line(raw: bytes, project_dir: str, state: FileState, last_msg_id: li
     except ValueError:
         return None
     t = d.get("type")
+    if quota_sink is not None and "quotaLimits" in d:
+        q = quota_observation(d)
+        if q:
+            quota_sink.append(q)
     if t == "user":
         _observe_user(d, state)
         return None
