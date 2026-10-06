@@ -13,3 +13,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# output of scripts/demo_report.py
+demo/
