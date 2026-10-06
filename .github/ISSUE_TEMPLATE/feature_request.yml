@@ -1,0 +1,26 @@
+name: Feature request / 기능 제안
+description: An idea or a usage pattern moni_token should explain / 아이디어, 또는 moni_token이 설명해야 할 사용 패턴
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        moni_token stays local and deterministic: no LLM calls, no network, no conversation text stored.
+        Proposals that need any of these are out of scope.
+
+        moni_token은 로컬·결정론적 도구입니다. LLM 호출, 네트워크 전송, 대화 내용 저장이 필요한 제안은 범위 밖입니다.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 문제
+      description: What you wanted to know or do, and why it was hard / 알고 싶거나 하고 싶었던 것과, 무엇이 어려웠는지
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal / 제안
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / 대안

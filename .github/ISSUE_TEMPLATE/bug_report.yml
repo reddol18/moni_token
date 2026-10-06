@@ -1,0 +1,38 @@
+name: Bug report / 버그 신고
+description: Something is wrong or a number looks off / 동작이 이상하거나 숫자가 맞지 않을 때
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please do not paste Claude Code log lines, conversation text or file contents.** moni_token never stores
+        them, and they don't belong in a public issue. Numbers, command output and screenshots of the dashboard are enough.
+
+        **Claude Code 로그 원문, 대화 내용, 파일 내용은 붙이지 마세요.** moni_token도 저장하지 않는 정보이고, 공개 이슈에
+        올라가면 안 됩니다. 숫자, 명령 출력, 대시보드 스크린샷이면 충분합니다.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / 무슨 일이 있었나요
+      description: What you saw, and what you expected instead / 본 것과, 대신 기대한 것
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce / 재현 방법
+      description: Commands you ran and their output / 실행한 명령과 출력
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Versions / 버전
+      description: "OS, Python, Claude Code version (`claude --version`), moni_token commit"
+  - type: checkboxes
+    id: setup
+    attributes:
+      label: Setup / 설정
+      options:
+        - label: Scheduled task (`check` every 2 minutes) / 작업 스케줄러 등록
+        - label: Status line recorder / 상태줄 기록기
+        - label: "`/usage` readings entered with `observe` / `observe`로 `/usage` 값 입력"
