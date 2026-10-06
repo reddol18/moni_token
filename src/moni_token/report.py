@@ -11,7 +11,9 @@ import time
 from pathlib import Path
 
 from . import config
+from .calibrate import estimate
 from .events import list_events
+from .summary import _pp, best_alternative, digest, event_summary
 from .pctseries import pct_at, series
 
 DAY = 86_400_000
@@ -33,33 +35,51 @@ def _pack(s: dict, now_ms: int) -> dict:
                 reset=win[1] if win else None, calib_n=s["n_samples"], reliable=s["reliable"])
 
 
+def _timeline(con, names, start_ms, end_ms) -> list[dict]:
+    calls = []
+    for (ts, proj, sid, side, ep, inp, out, cr, c5, c1, trig, prb, img, mid) in con.execute(
+            "SELECT ts_ms, project_dir, session_id, is_sidechain, entrypoint, input, output, cache_read, cache_5m, "
+            "cache_1h, trigger, prev_result_bytes, prev_result_image, msg_id FROM calls "
+            "WHERE ts_ms >= ? AND ts_ms < ? ORDER BY ts_ms LIMIT ?", (start_ms, end_ms, MAX_TIMELINE_CALLS)):
+        tools = [n for (n,) in con.execute("SELECT name FROM call_tools WHERE msg_id = ?", (mid,))]
+        calls.append(dict(t=ts, p=names.get(proj, proj), s=(sid or "")[:8], sc=side, hl=int(ep == "sdk-cli"),
+                          ctx=inp + cr + c5 + c1, w=c5 + c1, o=out, tr=trig, rb=prb, img=img, tools=tools))
+    return calls
+
+
+def report_events(con: sqlite3.Connection, since_ms: int, with_calls: bool = False) -> list[dict]:
+    """Recorded events, flattened for display, each with its savings summary sentence."""
+    names = _names(con) if with_calls else {}
+    ratio = estimate(con, "five_hour")["usd_per_pct"]
+    events = []
+    for e in list_events(con, since_ms):
+        ev = (e["spike"] or {}).get("evidence", {})
+        d = dict(id=e["id"], kind=e["kind"], start=e["start_ms"], end=e["end_ms"],
+                 rise=ev.get("rise_pp"), frm=ev.get("from_pct"), to=ev.get("to_pct"), basis=ev.get("basis"),
+                 headline=e["headline"], note=e["note"], agents=e["agents"],
+                 causes=[{k: c.get(k) for k in ("label", "fact_text", "interpretation", "advice", "share",
+                                                "saving_usd", "saving_share", "alternative")} for c in e["causes"]],
+                 calls=_timeline(con, names, e["start_ms"], e["end_ms"]) if with_calls else [])
+        d["summary"] = event_summary(d, ratio)
+        b = best_alternative(d)
+        pp = _pp(d, b, ratio) if b else None
+        d["save_pp"] = round(pp, 2) if pp is not None else None
+        events.append(d)
+    return events
+
+
 def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7) -> dict:
     start = now_ms - days * DAY
-    names = _names(con)
     fh = _pack(series(con, "five_hour", start, now_ms), now_ms)
     sd = _pack(series(con, "seven_day", start, now_ms), now_ms)
-    events = []
-    for e in list_events(con, start):
-        calls = []
-        for (ts, proj, sid, side, ep, inp, out, cr, c5, c1, trig, prb, img, mid) in con.execute(
-                "SELECT ts_ms, project_dir, session_id, is_sidechain, entrypoint, input, output, cache_read, cache_5m, "
-                "cache_1h, trigger, prev_result_bytes, prev_result_image, msg_id FROM calls "
-                "WHERE ts_ms >= ? AND ts_ms < ? ORDER BY ts_ms LIMIT ?", (e["start_ms"], e["end_ms"], MAX_TIMELINE_CALLS)):
-            tools = [n for (n,) in con.execute("SELECT name FROM call_tools WHERE msg_id = ?", (mid,))]
-            calls.append(dict(t=ts, p=names.get(proj, proj), s=(sid or "")[:8], sc=side, hl=int(ep == "sdk-cli"),
-                              ctx=inp + cr + c5 + c1, w=c5 + c1, o=out, tr=trig, rb=prb, img=img, tools=tools))
-        ev = (e["spike"] or {}).get("evidence", {})
-        events.append(dict(id=e["id"], kind=e["kind"], start=e["start_ms"], end=e["end_ms"],
-                           rise=ev.get("rise_pp"), frm=ev.get("from_pct"), to=ev.get("to_pct"), basis=ev.get("basis"),
-                           headline=e["headline"], note=e["note"], agents=e["agents"],
-                           causes=[{k: c.get(k) for k in ("label", "fact_text", "interpretation", "advice", "share")}
-                                   for c in e["causes"]],
-                           calls=calls))
+    events = report_events(con, start, with_calls=True)
+    main = [e for e in events if e["kind"] == "pct"] or [e for e in events if e["kind"] == "rate"]
+    dg = digest(main, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"])
     try:
         seen = json.loads((config.data_dir() / "statusline.seen").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         seen = None
-    return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen)
+    return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen, digest=dg)
 
 
 def render(data: dict) -> str:
@@ -124,6 +144,8 @@ details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.t
 <h1>Claude 한도 사용률 · 급상승 원인</h1>
 <p class="sub" id="gen"></p>
 <div class="tiles" id="tiles"></div>
+<h2>절약 요약 (최근 7일)</h2>
+<div class="card" id="digest"></div>
 <h2>현재 세션 (5시간 한도)<span class="range" id="r5"></span></h2>
 <div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정(로그 ÷ 보정)</span>
 <span><i class="bandk"></i> 급상승 사건</span><span id="cal5"></span></div><div class="chart" id="c5"></div></div>
@@ -131,7 +153,7 @@ details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.t
 <div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정</span>
 <span id="cal7"></span></div><div class="chart" id="c7"></div></div>
 <h2>급상승 사건</h2>
-<div class="card scroll"><table id="events"><thead><tr><th>시각</th><th>상승</th><th>주 원인</th><th>에이전트 점유율</th></tr></thead><tbody></tbody></table>
+<div class="card scroll"><table id="events"><thead><tr><th>시각</th><th>상승</th><th>주 원인</th><th class="n">절약 가능</th><th>에이전트 점유율</th></tr></thead><tbody></tbody></table>
 <p class="note">행을 누르면 에이전트(프로젝트)별 점유율, 원인 근거, 그 구간의 호출 타임라인이 열립니다. 점유율은 구간 안 로컬 로그 사용량(토큰 종류별 가중) 기준이며 해석은 규칙에 따른 추정입니다.</p></div>
 </main>
 <script id="data" type="application/json">/*DATA*/null</script>
@@ -198,29 +220,31 @@ RANGES.forEach(([k,v])=>{const b=el('button',{'aria-pressed':v===r5},k);b.onclic
 const pctEvents=D.events.filter(e=>e.kind==='pct'||e.kind==='cache_write');
 function draw(){line('#c5',F,D.end-r5,pctEvents);line('#c7',W,D.start,null)}
 
+const G=D.digest;$('#digest').innerHTML=`<p style="margin:0 0 8px">${esc(G.headline)}</p>`+(G.items.length?'<table class="tl"><tr><th>원인</th><th class="n">사건</th><th class="n">절약 가능</th><th>대안</th></tr>'+G.items.map(d=>`<tr><td>${esc(d.label)}</td><td class="n">${d.events}</td><td class="n">≈ ${d.pp.toFixed(1)}%p</td><td>${esc(d.advice)}<div class="note">${esc(d.alternative)}</div></td></tr>`).join('')+'</table>':'');
+
 // events
 const tb=$('#events tbody');
 const shareBar=a=>`<div class="share">${a.map(g=>`<i title="${esc(g.project)} ${Math.round(g.share*100)}%" style="width:${g.share*100}%;background:${colorOf(g.project)}"></i>`).join('')}</div>`;
 for(const e of [...D.events].reverse()){
  const rise=e.kind==='pct'?`<b>+${e.rise}%p</b> ${pc(e.frm)}→${pc(e.to)}${e.basis==='estimated'?' <span class="badge">추정</span>':''}`:e.kind==='cache_write'?'캐시 재기록':e.kind==='rate'?'사용량 급증':'지정 구간';
  const top=e.agents.slice(0,3).map(g=>`<span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)} ${Math.round(g.share*100)}%`).join(' &nbsp;');
- const tr=el('tr',{class:'ev',tabindex:'0','data-id':e.id},`<td>${fmt(e.start)}~${hm(e.end)}</td><td>${rise}</td><td>${esc(e.causes[0]?.label||'규칙에 맞는 원인 없음')}</td><td>${top}</td>`);
+ const tr=el('tr',{class:'ev',tabindex:'0','data-id':e.id},`<td>${fmt(e.start)}~${hm(e.end)}</td><td>${rise}</td><td>${esc(e.causes[0]?.label||'규칙에 맞는 원인 없음')}</td><td class="n">${e.save_pp!=null&&e.save_pp>=0.05?'≈ '+e.save_pp.toFixed(1)+'%p':'—'}</td><td>${top}</td>`);
  tr.onclick=()=>openEvent(e.id);tr.onkeydown=k=>{if(k.key==='Enter')openEvent(e.id)};tb.append(tr)}
 function openEvent(id,scroll){
  const tr=tb.querySelector(`tr[data-id="${id}"]`);if(!tr)return;const nx=tr.nextElementSibling;
  if(nx&&nx.classList.contains('detail')){nx.remove();return}
  const e=D.events.find(x=>x.id===id);
- let h=`<b>에이전트별 점유율</b>${shareBar(e.agents)}<table class="tl"><tr><th>에이전트(프로젝트)</th><th class="n">점유율</th>${e.rise?'<th class="n">≈ 기여 %p</th>':''}<th class="n">호출</th><th class="n">세션</th><th class="n">서브에이전트</th><th class="n">headless</th></tr>`+
+ let h=`<div class="cause"><b>절약 요약</b><div>${esc(e.summary)}</div></div><b>에이전트별 점유율</b>${shareBar(e.agents)}<table class="tl"><tr><th>에이전트(프로젝트)</th><th class="n">점유율</th>${e.rise?'<th class="n">≈ 기여 %p</th>':''}<th class="n">호출</th><th class="n">세션</th><th class="n">서브에이전트</th><th class="n">headless</th></tr>`+
   e.agents.map(g=>`<tr><td><span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)}</td><td class="n">${Math.round(g.share*100)}%</td>${e.rise?`<td class="n">+${(g.share*e.rise).toFixed(1)}</td>`:''}
   <td class="n">${g.calls}</td><td class="n">${g.sessions}</td><td class="n">${Math.round(g.subagent_share*100)}%</td><td class="n">${Math.round(g.headless_share*100)}%</td></tr>`).join('')+'</table>';
  h+='<div style="margin-top:12px"><b>원인</b></div>'+(e.causes.map(c=>`<div class="cause"><b>${esc(c.label)} · 구간의 ${Math.round((c.share||0)*100)}%</b><div>사실: ${esc(c.fact_text)}</div>
- <div class="interp">해석: ${esc(c.interpretation)}</div><div class="adv">권고: ${esc(c.advice)}</div></div>`).join('')||'<p>규칙에 맞는 원인 없음</p>');
+ <div class="interp">해석: ${esc(c.interpretation)}</div><div class="adv">권고: ${esc(c.advice)}</div>${c.alternative?`<div>대안: ${esc(c.alternative)}${c.saving_share?` (구간의 약 ${Math.round(c.saving_share*100)}% 절약)`:''}</div>`:''}</div>`).join('')||'<p>규칙에 맞는 원인 없음</p>');
  h+=`<details><summary>호출 타임라인 (${e.calls.length}건)</summary><div class="scroll"><table class="tl"><tr><th>시각</th><th>에이전트</th><th>세션</th><th class="n">컨텍스트</th><th class="n">캐시 쓰기</th><th class="n">output</th><th>계기</th><th>도구</th></tr>`+
   e.calls.map(c=>`<tr><td>${hm(c.t)}:${pad(new Date(c.t).getSeconds())}</td><td>${esc(c.p)}${c.sc?' (sub)':''}${c.hl?' (headless)':''}</td><td>${esc(c.s)}</td><td class="n">${c.ctx.toLocaleString()}</td>
   <td class="n">${c.w?c.w.toLocaleString():''}</td><td class="n">${c.o.toLocaleString()}</td>
   <td>${c.tr==='human'?'사람 입력':c.tr==='tool_result'?'도구 결과'+(c.rb>=100000?` ${Math.round(c.rb/1024)}KB`:'')+(c.img?' 이미지':''):''}</td><td>${esc(c.tools.join(', '))}</td></tr>`).join('')+'</table></div></details>';
  h+=`<p class="note">${esc(e.note||'')}</p>`;
- const d=el('tr',{class:'detail'},`<td colspan="4">${h}</td>`);tr.after(d);if(scroll)tr.scrollIntoView({behavior:'smooth',block:'center'})}
+ const d=el('tr',{class:'detail'},`<td colspan="5">${h}</td>`);tr.after(d);if(scroll)tr.scrollIntoView({behavior:'smooth',block:'center'})}
 draw();addEventListener('resize',()=>{clearTimeout(window._r);window._r=setTimeout(draw,120)});
 const hid=/^#event-(\d+)$/.exec(location.hash);if(hid)openEvent(+hid[1],true);
 </script></body></html>"""

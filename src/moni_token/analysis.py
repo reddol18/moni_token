@@ -7,6 +7,7 @@ import sqlite3
 import statistics
 from dataclasses import dataclass, field
 
+from . import savings as sv
 from .units import usd_parts
 
 MIN = 60_000
@@ -75,6 +76,9 @@ class Cause:
     interpretation: str = ""   # always an estimate
     advice: str = ""
     share: float = 0.0         # attributed usage / the window's usage
+    saving_usd: float = 0.0    # counterfactual saving under `alternative` (savings.py)
+    alternative: str = ""      # the alternative, with its assumptions spelled out
+    saving_share: float = 0.0  # saving / the window's usage
 
 
 @dataclass
@@ -100,7 +104,12 @@ def _make(code, scope, usd, facts, /, **fmt) -> Cause:
     return Cause(code, scope, usd, facts, label, fact_t.format(**fmt), interp.format(**fmt) + " (추정)", advice)
 
 
-def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0) -> list[Cause]:
+def _save(c: Cause, result: tuple[float, str]) -> None:
+    c.saving_usd, c.alternative = round(result[0], 4), result[1]
+
+
+def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0,
+                    sp: sv.SavingParams = sv.SavingParams()) -> list[Cause]:
     sid = rows[0]["session_id"]
     parts = {k: sum(r["parts"][k] for r in rows) for k in rows[0]["parts"]}
     total = sum(parts.values()) or 1e-12
@@ -122,6 +131,7 @@ def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0) ->
                                       ttl="1h" if ttl == p.idle_min_1h else "5m", at_ms=r["ts_ms"]),
                                  idle=idle, write=write, wshare=usd / (window_total or total),
                                  ttl="1시간" if ttl == p.idle_min_1h else "5분"))
+                _save(out[-1], sv.idle_resume(rows, r["ts_ms"], sp))
         last = r["ts_ms"]
 
     # 2) long context x many calls
@@ -134,6 +144,7 @@ def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0) ->
                          dict(calls=len(rows), ctx_median=med, ctx_max=max(ctx), cache_read_usd=round(parts["cache_read"], 4),
                               cache_read_share=round(read_share, 3)),
                          calls=len(rows), ctx=med, ctx_max=max(ctx), read=parts["cache_read"], share=read_share))
+        _save(out[-1], sv.long_context(rows, sp))
 
     # 3) cache miss not explained by idle resume
     other = [r for r in rows if r["msg_id"] not in idle_ids]
@@ -151,11 +162,13 @@ def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0) ->
             imgs = sum(r["prev_result_image"] for r in big)
             out.append(_make("big_input", sid, b_usd, dict(max_bytes=mx, images=imgs, cache_write_tokens=b_write),
                              bytes=mx, images=imgs, write=b_write))
+            _save(out[-1], sv.big_input(rows, big, sp))
             w_usd -= b_usd
             w_tok -= b_write
     if w_usd / total >= p.cache_write_share:
         out.append(_make("cache_miss", sid, w_usd, dict(cache_write_tokens=w_tok, share=round(w_usd / total, 3)),
                          write=w_tok, usd=w_usd, share=w_usd / total))
+        _save(out[-1], sv.cache_miss(w_tok, rows[0]["model"], sp))
 
     # 5) web research
     web = sum(r["web_tools"] for r in rows)
@@ -233,5 +246,8 @@ def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams 
                               n=len(active), projects=", ".join(projects), side=side, sdk=sdk))
     for c in a.causes:
         c.share = round(c.usd / total, 3) if total else 0.0
+        c.saving_share = round(min(c.saving_usd, total) / total, 3) if total else 0.0
+        if c.code in sv.ADVICE_ONLY:
+            c.alternative = sv.ADVICE_ONLY[c.code]
     a.causes.sort(key=lambda c: -c.usd)
     return a

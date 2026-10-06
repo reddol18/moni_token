@@ -28,6 +28,9 @@ def render(s: Spike, a: Analysis | None = None) -> tuple[str, str]:
         est = "" if e["basis"] == "measured" else " (추정)"
         who = ", ".join(f"{g['project']} {g['share']:.0%}" for g in (a.agents[:3] if a else []))
         cause = f" 원인: {a.causes[0].label}. {a.causes[0].advice}" if a and a.causes else ""
+        best = max((c for c in (a.causes if a else []) if c.saving_usd > 0), key=lambda c: c.saving_usd, default=None)
+        if best:
+            cause += f" 절약 가능 ≈{e['rise_pp'] * best.saving_share:.1f}%p."
         return (f"현재 세션 한도 +{e['rise_pp']:.1f}%p{est}",
                 f"{_hm(s.start_ms)}~{_hm(s.end_ms)} {e['from_pct']:.0f}% → {e['to_pct']:.0f}%. {who}.{cause}")
     ratio = f"평소의 {s.ratio:.1f}배" if s.ratio else "쉬던 중 급증"

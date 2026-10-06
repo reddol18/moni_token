@@ -14,7 +14,8 @@ from .calibrate import add_manual, add_usage_reading, estimate, ingest_statuslin
 from .collector import collect
 from .db import connect
 from .events import list_events, record, record_spike
-from .report import write_report
+from .report import report_events, write_report
+from .summary import digest
 from .settings import load_spike_params
 from .spikes import cache_write_spikes, detect, merge_runs, rate_spikes, suggest_floor
 
@@ -64,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--save", action="store_true", help="store as a manual event")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("events", help="recorded incidents")
+    p.add_argument("--since", help="YYYY-MM-DD (local)")
+    p = sub.add_parser("savings", help="what could have been saved, by cause (default: last 7 days)")
     p.add_argument("--since", help="YYYY-MM-DD (local)")
     p = sub.add_parser("backfill-events", help="detect and record past spikes (no notifications)")
     p.add_argument("--since", help="YYYY-MM-DD (local)")
@@ -176,11 +179,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print_analysis(an)
     elif a.cmd == "events":
-        for e in list_events(con, day_ms(a.since) if a.since else 0):
-            ratio = f" x{e['ratio']:.1f}" if e["ratio"] else ""
-            print(f"#{e['id']} {fmt(e['start_ms'])}~{fmt(e['end_ms'])} [{e['kind']}{ratio}] {e['headline']}")
-            for c in e["causes"][:3]:
-                print(f"    - {c['label']}: {c['fact_text']}")
+        evs = report_events(con, day_ms(a.since) if a.since else 0)
+        for e in evs:
+            rise = f" +{e['rise']}%p" if e.get("rise") else ""
+            print(f"#{e['id']} {fmt(e['start'])}~{fmt(e['end'])} [{e['kind']}{rise}] {e['headline']}")
+            print(f"    절약: {e['summary']}")
+    elif a.cmd == "savings":
+        evs = [e for e in report_events(con, day_ms(a.since) if a.since else now_ms() - 7 * 86_400_000)
+               if e["kind"] == "pct"]
+        d = digest(evs, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"])
+        print(d["headline"])
+        for line in d["lines"]:
+            print("  - " + line)
     elif a.cmd == "backfill-events":
         p = load_spike_params()
         n = 0
