@@ -1,0 +1,15 @@
+# local data — never commit (usage numbers per session/project)
+.moni_token/
+*.db
+*.sqlite
+.env
+.env.*
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/

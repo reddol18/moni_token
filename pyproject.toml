@@ -1,0 +1,21 @@
+[project]
+name = "moni-token"
+version = "0.1.0"
+description = "Explains why Claude Code usage spiked, from local logs only. No LLM calls, no network."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+moni-token = "moni_token.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.13"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
