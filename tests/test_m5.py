@@ -42,6 +42,12 @@ def test_statusline_records_numbers_only_and_dedupes(home, monkeypatch, capsys):
     assert "secret" not in lines[0] and "Opus" not in lines[0]
 
 
+def test_statusline_prints_utf8_regardless_of_console_code_page(home, monkeypatch, capsysbinary):
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(SL).encode())))
+    assert statusline.main([]) == 0
+    assert " · ".encode("utf-8") in capsysbinary.readouterr().out   # cp949 would give b"\xa1\xa4"
+
+
 def test_statusline_never_fails(home, monkeypatch, capsys):
     assert run_sl(monkeypatch, capsys, b"not json").strip() == "moni_token"
     assert run_sl(monkeypatch, capsys, b"").strip()

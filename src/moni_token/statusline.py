@@ -81,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except Exception:
             pass
-    print(own_line(obs) if obs else "moni_token")
+    # Claude Code reads UTF-8; print() would use the Windows console code page (cp949 here) and garble "·"
+    sys.stdout.buffer.write(((own_line(obs) if obs else "moni_token") + "\n").encode("utf-8"))
+    sys.stdout.flush()
     return 0
 
 
