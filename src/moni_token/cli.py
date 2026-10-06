@@ -10,7 +10,7 @@ from . import config
 from .alerts import check_and_notify, render
 from .analysis import analyze
 from .blocks import compute_blocks, status
-from .calibrate import add_manual, estimate, ingest_statusline
+from .calibrate import add_manual, add_usage_reading, estimate, ingest_statusline
 from .collector import collect
 from .db import connect
 from .events import list_events, record, record_spike
@@ -72,6 +72,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--from", dest="frm")
     p.add_argument("--to")
     p.add_argument("--pct", type=float)
+    p = sub.add_parser("observe", help="enter what /usage shows, e.g. --session 49 --session-reset '2026-10-07 02:30' "
+                                       "--week 7 --week-reset '2026-10-13 18:00'")
+    p.add_argument("--session", type=float)
+    p.add_argument("--session-reset")
+    p.add_argument("--week", type=float)
+    p.add_argument("--week-reset")
     p = sub.add_parser("statusline", help="status line command for Claude Code (records numbers only)")
     p.add_argument("--wrap", help="previous status line command to run and display")
     a = ap.parse_args(argv)
@@ -131,6 +137,23 @@ def main(argv: list[str] | None = None) -> int:
         with open(config.data_dir() / "runs.jsonl", "a", encoding="utf-8") as f:   # M5: resident cost
             f.write(json.dumps(dict(ts_ms=now_ms(), wall_ms=round((time.perf_counter() - t0) * 1000),
                                     cpu_ms=round((time.process_time() - c0) * 1000))) + "\n")
+    elif a.cmd == "observe":
+        collect_all(con, a.projects or config.claude_projects_dir())
+        for kind, pct, reset, label in (("five_hour", a.session, a.session_reset, "current session"),
+                                        ("seven_day", a.week, a.week_reset, "current week")):
+            if pct is None or not reset:
+                continue
+            s = add_usage_reading(con, kind, pct, local_ms(reset), now_ms())
+            per = f" -> ${s['usd'] / pct:.2f} per 1%" if pct else ""
+            print(f"{label}: {pct}% since {fmt(s['start_ms'])} = ${s['usd']:.2f} in local logs{per}")
+        for kind in ("five_hour", "seven_day"):
+            e = estimate(con, kind, min_samples=1)
+            print(f"{kind}: samples {e['n']}, median ${e['usd_per_pct'] or 0:.2f} per 1%")
+        rebuild_events_since = now_ms() - 7 * 86_400_000
+        con.execute("DELETE FROM events WHERE start_ms >= ?", (rebuild_events_since,))
+        for s in detect(con, rebuild_events_since, now_ms(), load_spike_params()):
+            record_spike(con, s, now_ms())
+        write_report(con, config.data_dir() / "report.html")
     elif a.cmd == "calibrate":
         if a.frm and a.to and a.pct:
             s = add_manual(con, local_ms(a.frm), local_ms(a.to), a.pct, now_ms())

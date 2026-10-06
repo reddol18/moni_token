@@ -69,9 +69,30 @@ def statusline_samples(con: sqlite3.Connection, kind: str = "five_hour") -> list
     return out
 
 
-def manual_samples(con: sqlite3.Connection) -> list[dict]:
-    return [dict(start_ms=a, end_ms=b, pct=p, usd=usd_between(con, a, b), source="manual")
-            for a, b, p in con.execute("SELECT start_ms, end_ms, pct FROM calib_manual ORDER BY start_ms")]
+WINDOW_MS = {"five_hour": 5 * 3_600_000, "seven_day": 7 * 86_400_000}
+
+
+def manual_samples(con: sqlite3.Connection, kind: str = "five_hour") -> list[dict]:
+    out = []
+    if kind == "five_hour":
+        out = [dict(start_ms=a, end_ms=b, pct=p, usd=usd_between(con, a, b), source="manual")
+               for a, b, p in con.execute("SELECT start_ms, end_ms, pct FROM calib_manual ORDER BY start_ms")]
+    # a `/usage` reading: the window started at 0% at (reset - window length)
+    for ts, reset, pct in con.execute("SELECT ts_ms, resets_at_ms, used_pct FROM limit_obs WHERE source='usage' "
+                                      "AND kind=? AND used_pct >= ?", (kind, MIN_DELTA_PCT)):
+        start = reset - WINDOW_MS[kind]
+        out.append(dict(start_ms=start, end_ms=ts, pct=pct, usd=usd_between(con, start, ts), source="usage"))
+    return out
+
+
+def add_usage_reading(con: sqlite3.Connection, kind: str, pct: float, resets_at_ms: int, now_ms: int) -> dict:
+    """Store a value read from Claude Code's /usage screen. Re-entering the same reading replaces it."""
+    con.execute("DELETE FROM limit_obs WHERE source='usage' AND kind=? AND resets_at_ms=? AND used_pct=?",
+                (kind, resets_at_ms, pct))
+    con.execute("INSERT OR REPLACE INTO limit_obs VALUES (?,?,?,?,?,?)", (now_ms, "usage", kind, resets_at_ms, "", pct))
+    con.commit()
+    start = resets_at_ms - WINDOW_MS[kind]
+    return dict(start_ms=start, end_ms=now_ms, pct=pct, usd=usd_between(con, start, now_ms))
 
 
 def add_manual(con: sqlite3.Connection, start_ms: int, end_ms: int, pct: float, now_ms: int) -> dict:
@@ -86,11 +107,12 @@ def estimate(con: sqlite3.Connection, kind: str = "five_hour", min_samples: int 
     `reliable` is False below MIN_SAMPLES; callers that draw an estimate line pass min_samples=1 and
     label it with n so the reader can judge.
     """
-    manual = manual_samples(con) if kind == "five_hour" else []
-    samples = sorted(statusline_samples(con, kind) + manual, key=lambda s: s["end_ms"])[-RECENT:]
+    samples = sorted(statusline_samples(con, kind) + manual_samples(con, kind), key=lambda s: s["end_ms"])[-RECENT:]
     ratios = [s["usd"] / s["pct"] for s in samples if s["pct"] > 0 and s["usd"] > 0]
-    if len(ratios) < max(1, min_samples):
+    # a /usage reading covers a whole window from a known 0% start, so one is enough to draw the estimate
+    direct = any(s["source"] == "usage" and s["usd"] > 0 for s in samples)
+    if len(ratios) < max(1, min_samples) and not direct:
         return dict(usd_per_pct=None, n=len(ratios), samples=samples, reliable=False)
     q = statistics.quantiles(ratios, n=4) if len(ratios) >= 4 else [min(ratios), None, max(ratios)]
     return dict(usd_per_pct=statistics.median(ratios), q1=q[0], q3=q[-1], n=len(ratios), samples=samples,
-                reliable=len(ratios) >= MIN_SAMPLES)
+                reliable=len(ratios) >= MIN_SAMPLES or direct)

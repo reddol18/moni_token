@@ -76,6 +76,22 @@ def test_measured_rise_is_preferred(con):
     assert hits and hits[0].evidence["basis"] == "measured" and hits[0].evidence["to_pct"] == 16.0
 
 
+def test_usage_reading_anchors_windows_and_calibrates(logs, con):
+    from moni_token.calibrate import add_usage_reading, estimate
+    from moni_token.blocks import compute_blocks
+    reset = T0 + 4 * H + 30 * M                     # window 23:30(prev day)..04:30
+    logs.write(logs.path(), *[logs.assistant(f"m{i}", iso(T0 + i * 10 * M), inp=1_000_000, **SONNET) for i in range(10)])
+    collect(con, logs.root)
+    now = T0 + 100 * M
+    add_usage_reading(con, "five_hour", 20.0, reset, now)
+    add_usage_reading(con, "five_hour", 20.0, reset, now + 1)    # same reading again: replaced, not doubled
+    e = estimate(con, "five_hour")
+    assert e["n"] == 1 and e["reliable"] and e["usd_per_pct"] == pytest.approx(20.0 / 20.0)
+    assert any(b.end_ms == reset and b.source == "usage" for b in compute_blocks(con))
+    s = series(con, "five_hour", T0, now + 1)
+    assert pct_at(s, now + 1) == (20.0, "measured")
+
+
 def test_agent_shares_split_subagent_and_headless(logs, con):
     logs.write(logs.path(project="E--a", session="s"), logs.assistant("m1", iso(T0), session="s", inp=1_000_000, **SONNET))
     logs.write(logs.path(project="E--a", session="s", agent="x"),

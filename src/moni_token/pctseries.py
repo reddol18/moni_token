@@ -21,8 +21,8 @@ class Point:
 
 
 def _measured_steps(con, kind):
-    return con.execute("SELECT ts_ms, resets_at_ms, used_pct FROM limit_obs WHERE source='statusline' AND kind=? "
-                       "AND used_pct IS NOT NULL ORDER BY ts_ms", (kind,)).fetchall()
+    return con.execute("SELECT ts_ms, resets_at_ms, used_pct FROM limit_obs WHERE source IN ('statusline','usage') "
+                       "AND kind=? AND used_pct IS NOT NULL ORDER BY ts_ms", (kind,)).fetchall()
 
 
 def _week_windows(con, start, end):
@@ -75,6 +75,10 @@ def series(con: sqlite3.Connection, kind: str, start: int, end: int, step: int =
         pts.append(Point(t, meas, round(e, 2) if e is not None else None))
         cum += usd.get(t, 0.0) if w else 0.0
         t += step
+    # the latest reading may fall between grid points: let it decide the value "now"
+    later = [o for o in obs if pts and pts[-1].t < o[0] <= end and end < o[1]]
+    if later:
+        pts.append(Point(end, later[-1][2], pts[-1].estimated))
     return dict(kind=kind, points=pts, windows=windows, usd_per_pct=ratio, n_samples=est["n"],
                 reliable=est["reliable"])
 

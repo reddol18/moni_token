@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 HOUR = 3_600_000
 WINDOW = 5 * HOUR
-SOURCE_RANK = {"statusline": 0, "log": 1, "manual": 2}
+SOURCE_RANK = {"statusline": 0, "usage": 0, "log": 1, "manual": 2}
 
 
 @dataclass
