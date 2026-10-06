@@ -64,7 +64,9 @@ def series(con: sqlite3.Connection, kind: str, start: int, end: int, step: int =
             cur_w = w
             cum = sum(v for k, v in usd.items() if w and w[0] <= k < t) if w else 0.0
         while oi < len(obs) and obs[oi][0] <= t:
-            last_obs = obs[oi]
+            # sessions can report a stale, lower % for the same window: within a window it only goes up
+            if not last_obs or obs[oi][1] // 60_000 != last_obs[1] // 60_000 or obs[oi][2] >= last_obs[2]:
+                last_obs = obs[oi]
             oi += 1
         meas = None
         if last_obs and t < last_obs[1]:              # still inside the observed window

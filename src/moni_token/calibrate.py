@@ -54,18 +54,25 @@ def usd_between(con: sqlite3.Connection, a_ms: int, b_ms: int) -> float:
 
 
 def statusline_samples(con: sqlite3.Connection, kind: str = "five_hour") -> list[dict]:
-    """Consecutive observations inside one limit window whose % rose by >= MIN_DELTA_PCT."""
+    """Usage between two moments the window's % first reached a new value.
+
+    The % is an integer and several sessions report it, some with a stale value, so it can flap (3, 2, 3).
+    Only rises above the window's maximum count, and only from a moment the value is known to have just
+    changed: the first reading of a window can be anywhere inside its integer, so it is not an anchor.
+    """
     obs = con.execute("SELECT ts_ms, resets_at_ms, used_pct FROM limit_obs WHERE source='statusline' "
                       "AND kind=? AND used_pct IS NOT NULL ORDER BY ts_ms", (kind,)).fetchall()
-    out, anchor = [], None
+    out, reset_cur, high, anchor = [], None, None, None
     for ts, reset, pct in obs:
-        if anchor is None or reset != anchor[1] or pct < anchor[2]:
-            anchor = (ts, reset, pct)
+        if reset // 60_000 != reset_cur:
+            reset_cur, high, anchor = reset // 60_000, pct, None
             continue
-        if pct - anchor[2] >= MIN_DELTA_PCT:
+        if pct <= high:
+            continue
+        if anchor and pct - anchor[1] >= MIN_DELTA_PCT:
             usd = usd_between(con, anchor[0], ts)
-            out.append(dict(start_ms=anchor[0], end_ms=ts, pct=pct - anchor[2], usd=usd, source="statusline"))
-            anchor = (ts, reset, pct)
+            out.append(dict(start_ms=anchor[0], end_ms=ts, pct=pct - anchor[1], usd=usd, source="statusline"))
+        high, anchor = pct, (ts, pct)
     return out
 
 

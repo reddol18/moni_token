@@ -6,7 +6,7 @@ import pytest
 
 from moni_token import statusline
 from moni_token.blocks import compute_blocks
-from moni_token.calibrate import add_manual, estimate, ingest_statusline
+from moni_token.calibrate import add_manual, estimate, ingest_statusline, statusline_samples
 from moni_token.collector import collect
 from moni_token.db import connect
 
@@ -77,6 +77,29 @@ def test_statusline_feeds_window_boundary_and_calibration(home, logs, tmp_path, 
     e = estimate(con)
     assert e["n"] >= 3 and e["usd_per_pct"] > 0
     assert all(s["source"] == "statusline" for s in e["samples"])
+
+
+def test_flapping_statusline_pct_is_not_a_calibration_sample(home, logs, tmp_path):
+    """2026-10-07 08:31: two sessions reported 3 and a stale 2 seconds apart; each 2->3 became
+    "1%p for $0.08", the estimate dropped 44x and a false 99% alert fired."""
+    from moni_token.pctseries import series
+    con = connect(tmp_path / "u.db")
+    reset = T0 + 5 * H
+    sp = home / "statusline.jsonl"
+    flap = [(T0 + 2 * H + i * 1000, pct) for i, pct in enumerate([3, 2, 3, 2, 3, 2, 3])]
+    real = [(T0 + 2 * H + 20 * M, 4), (T0 + 2 * H + 30 * M, 3), (T0 + 2 * H + 40 * M, 5)]
+    with open(sp, "w", encoding="utf-8") as f:
+        for ts, pct in flap + real:
+            f.write(json.dumps(dict(ts_ms=ts, sid="s", fh_pct=pct, fh_reset=reset // 1000 + ts % 7,   # reset jitters by seconds
+                                    sd_pct=None, sd_reset=None, ctx_pct=None)) + "\n")
+    logs.write(logs.path(), *[logs.assistant(f"m{i}", __import__("test_m2").iso(T0 + 2 * H + i * M + 500),
+                                             model="claude-sonnet-5", inp=50_000, cr=0, out=0) for i in range(45)])
+    collect(con, logs.root)
+    ingest_statusline(con, sp)
+    samples = statusline_samples(con)
+    assert [(s["start_ms"], s["end_ms"], s["pct"]) for s in samples] == [(real[0][0], real[2][0], 1)]
+    m = [p.measured for p in series(con, "five_hour", T0 + 2 * H, T0 + 3 * H)["points"] if p.measured is not None]
+    assert m == sorted(m)                            # the stale 3 after 4 does not pull the line down
 
 
 def test_manual_calibration_survives_schema_rebuild(tmp_path):
