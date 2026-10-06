@@ -72,6 +72,23 @@ CREATE TABLE IF NOT EXISTS alerts (
     delivered INTEGER NOT NULL,
     PRIMARY KEY (kind, scope, start_ms)
 );
+-- incidents with their evidence; text columns hold template sentences only, never log content
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,          -- rate | cache_write | manual
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    created_ms INTEGER NOT NULL,
+    usd REAL NOT NULL,
+    baseline_usd REAL,
+    ratio REAL,
+    headline TEXT NOT NULL,
+    causes_json TEXT NOT NULL,
+    sessions_json TEXT NOT NULL,
+    spike_json TEXT,
+    note TEXT,
+    UNIQUE (kind, start_ms, end_ms)
+);
 CREATE TABLE IF NOT EXISTS call_tools (
     msg_id TEXT NOT NULL,
     tool_use_id TEXT NOT NULL,
@@ -81,7 +98,7 @@ CREATE TABLE IF NOT EXISTS call_tools (
 """
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def connect(path: Path | str) -> sqlite3.Connection:

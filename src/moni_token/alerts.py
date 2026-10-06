@@ -2,6 +2,8 @@
 import sqlite3
 from datetime import datetime
 
+from .analysis import Analysis
+from .events import record_spike
 from .notify import desktop_notify
 from .settings import SpikeParams
 from .spikes import Spike, detect
@@ -14,17 +16,21 @@ def _hm(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000).strftime("%H:%M")
 
 
-def render(s: Spike) -> tuple[str, str]:
+def render(s: Spike, a: Analysis | None = None) -> tuple[str, str]:
     if s.kind == "cache_write":
         e = s.evidence
         idle = f", {e['idle_before_min']:.0f}분 쉰 뒤" if e.get("idle_before_min") else ""
         return ("Claude 사용량: 캐시 재기록",
                 f"{_hm(s.start_ms)} {e['project']} 세션{idle} 한 번에 "
-                f"{e['cache_write_tokens']:,}토큰 재기록(${s.usd:.2f}). 오래 쉰 큰 세션은 새 세션으로.")
+                f"{e['cache_write_tokens']:,}토큰 재기록(${s.usd:.2f}). 1시간 넘게 쉰 큰 세션은 새 세션으로.")
     ratio = f"평소의 {s.ratio:.1f}배" if s.ratio else "쉬던 중 급증"
-    return ("Claude 사용량 급증",
-            f"{_hm(s.start_ms)}~{_hm(s.end_ms)} {s.evidence['window_min']}분에 ${s.usd:.2f} ({ratio}, "
-            f"기준 ${s.evidence['threshold_usd']:.2f}). 원인: moni-token spikes")
+    head = f"{_hm(s.start_ms)}~{_hm(s.end_ms)} ${s.usd:.2f} ({ratio})."
+    if a and a.causes:
+        c = a.causes[0]
+        top = next((x for x in a.sessions if x["session_id"] == c.scope), None)
+        where = f" {top['project']}" if top else ""
+        return (f"Claude 사용량 급증: {c.label}", f"{head}{where} — {c.fact_text} {c.advice}")
+    return ("Claude 사용량 급증", f"{head} 기준 ${s.evidence['threshold_usd']:.2f}. 상세: moni-token events")
 
 
 def check_and_notify(con: sqlite3.Connection, now_ms: int, p: SpikeParams, notify=None) -> list[Spike]:
@@ -34,8 +40,9 @@ def check_and_notify(con: sqlite3.Connection, now_ms: int, p: SpikeParams, notif
         key = (s.kind, s.scope, s.start_ms)
         if con.execute("SELECT 1 FROM alerts WHERE kind=? AND scope=? AND start_ms=?", key).fetchone():
             continue
+        _, a = record_spike(con, s, now_ms)
         # stale hits (first run, or after the PC slept) are recorded silently instead of a toast burst
-        ok = notify(*render(s)) if s.end_ms >= now_ms - FRESH_MS else False
+        ok = notify(*render(s, a)) if s.end_ms >= now_ms - FRESH_MS else False
         con.execute("INSERT INTO alerts VALUES (?,?,?,?,?)", (*key, now_ms, int(ok)))
         if ok:
             sent.append(s)

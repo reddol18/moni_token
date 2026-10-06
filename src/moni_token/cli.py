@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 from . import config
+from dataclasses import asdict
+
 from .alerts import check_and_notify, render
+from .analysis import analyze
+from .events import list_events, record, record_spike
 from .blocks import compute_blocks, status
 from .collector import collect
 from .db import connect
@@ -44,6 +48,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--until", help="YYYY-MM-DD (local, exclusive)")
     p.add_argument("--all", action="store_true", help="show every hit, without re-alert suppression")
     sub.add_parser("check", help="collect, then notify about new spikes (for the scheduled task)")
+    p = sub.add_parser("analyze", help="explain a window you choose, e.g. --from '2026-10-06 12:31' --to '2026-10-06 12:56'")
+    p.add_argument("--from", dest="frm", required=True)
+    p.add_argument("--to", required=True)
+    p.add_argument("--save", action="store_true", help="store as a manual event")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("events", help="recorded incidents")
+    p.add_argument("--since", help="YYYY-MM-DD (local)")
+    p = sub.add_parser("backfill-events", help="detect and record past spikes (no notifications)")
+    p.add_argument("--since", help="YYYY-MM-DD (local)")
     sub.add_parser("suggest-floor", help="data-driven candidate for spike.floor_usd (p75 of active 15-min windows, 7 days)")
     a = ap.parse_args(argv)
 
@@ -89,10 +102,49 @@ def main(argv: list[str] | None = None) -> int:
         collect(con, a.projects or config.claude_projects_dir())
         for s in check_and_notify(con, now_ms(), load_spike_params()):
             print(" / ".join(render(s)))
+    elif a.cmd == "analyze":
+        an = analyze(con, local_ms(a.frm), local_ms(a.to))
+        if a.save:
+            record(con, "manual", an, now_ms())
+        if a.json:
+            print(json.dumps(dict(start_ms=an.start_ms, end_ms=an.end_ms, usd=an.usd, calls=an.calls,
+                                  sessions=an.sessions, causes=[asdict(c) for c in an.causes], note=an.note),
+                             ensure_ascii=False))
+        else:
+            print_analysis(an)
+    elif a.cmd == "events":
+        for e in list_events(con, day_ms(a.since) if a.since else 0):
+            ratio = f" x{e['ratio']:.1f}" if e["ratio"] else ""
+            print(f"#{e['id']} {fmt(e['start_ms'])}~{fmt(e['end_ms'])} [{e['kind']}{ratio}] {e['headline']}")
+            for c in e["causes"][:3]:
+                print(f"    - {c['label']}: {c['fact_text']}")
+    elif a.cmd == "backfill-events":
+        p = load_spike_params()
+        n = 0
+        for s in detect(con, day_ms(a.since) if a.since else 0, now_ms(), p):
+            record_spike(con, s, now_ms())
+            n += 1
+        print(f"recorded {n} events")
     elif a.cmd == "suggest-floor":
         v = suggest_floor(con, now_ms())
         print("no data" if v is None else f"p75 of active 15-min windows (7 days): ${v:.2f}")
     return 0
+
+
+def print_analysis(an) -> None:
+    print(f"{fmt(an.start_ms)} ~ {fmt(an.end_ms)}  ${an.usd:.2f}, {an.calls} calls — {an.headline()}")
+    for s in an.sessions[:5]:
+        print(f"  session {s['session_id'][:8]} {s['project']:<16} {s['calls']:>4} calls  ${s['usd']:.2f} ({s['share']:.0%})")
+    for c in an.causes:
+        print(f"  [{c.label}] ${c.usd:.2f} {c.scope[:8]}")
+        print(f"     사실: {c.fact_text}")
+        print(f"     해석: {c.interpretation}")
+        print(f"     권고: {c.advice}")
+    print(f"  * {an.note}")
+
+
+def local_ms(s: str) -> int:
+    return int(datetime.strptime(s, "%Y-%m-%d %H:%M").timestamp() * 1000)
 
 
 def now_ms() -> int:
