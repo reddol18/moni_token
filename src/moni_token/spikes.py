@@ -95,9 +95,53 @@ def suppress_realerts(spikes: list[Spike], p: SpikeParams) -> list[Spike]:
     return out
 
 
+def pct_spikes(con: sqlite3.Connection, start_ms: int, end_ms: int, p: SpikeParams) -> list[Spike] | None:
+    """Sharp rises of the 5-hour limit % (measured, else estimated). None when no % is available at all."""
+    from .pctseries import series
+    s = series(con, "five_hour", start_ms - p.window_min * MIN, end_ms)
+    vals = {pt.t: (pt.measured, "measured") if pt.measured is not None else (pt.estimated, "estimated")
+            for pt in s["points"]}
+    if all(v is None for v, _ in vals.values()):
+        return None
+    win_of = lambda t: next((w for w in s["windows"] if w[0] <= t < w[1]), None)
+    usd = dict(_series(con, start_ms - p.window_min * MIN, end_ms))
+    out = []
+    span = p.window_min * MIN
+    for t, (v, basis) in sorted(vals.items()):
+        if t < start_ms or v is None:
+            continue
+        v0, _ = vals.get(t - span, (None, ""))
+        if win_of(t) != win_of(t - span):   # window reset inside the span: the rise starts from 0
+            v0 = 0.0
+        if v0 is None:
+            continue
+        rise = v - v0
+        if rise >= p.pct_jump:
+            out.append(Spike("pct", t - span, t, "all", sum(u for k, u in usd.items() if t - span <= k < t), 0.0, None,
+                             dict(from_pct=round(v0, 1), to_pct=round(v, 1), rise_pp=round(rise, 1), basis=basis,
+                                  window_min=p.window_min, threshold_pp=p.pct_jump,
+                                  usd_per_pct=s["usd_per_pct"], calib_samples=s["n_samples"])))
+    return out
+
+
+def merge_pct_runs(spikes: list[Spike]) -> list[Spike]:
+    out: list[Spike] = []
+    for s in spikes:
+        prev = out[-1] if out else None
+        if prev and s.start_ms <= prev.end_ms:
+            peak = s if s.evidence["rise_pp"] > prev.evidence["rise_pp"] else prev
+            ev = {**peak.evidence, "from_pct": prev.evidence["from_pct"], "to_pct": s.evidence["to_pct"]}
+            ev["rise_pp"] = round(ev["to_pct"] - ev["from_pct"], 1) if ev["to_pct"] >= ev["from_pct"] else peak.evidence["rise_pp"]
+            out[-1] = Spike("pct", prev.start_ms, s.end_ms, "all", prev.usd + s.usd, 0.0, None, ev)
+        else:
+            out.append(s)
+    return out
+
+
 def detect(con: sqlite3.Connection, start_ms: int, end_ms: int, p: SpikeParams) -> list[Spike]:
-    rate = merge_runs(rate_spikes(con, start_ms, end_ms, p))
-    return suppress_realerts(rate + cache_write_spikes(con, start_ms, end_ms, p), p)
+    pct = pct_spikes(con, start_ms, end_ms, p)
+    main = merge_pct_runs(pct) if pct is not None else merge_runs(rate_spikes(con, start_ms, end_ms, p))
+    return suppress_realerts(main + cache_write_spikes(con, start_ms, end_ms, p), p)
 
 
 def suggest_floor(con: sqlite3.Connection, end_ms: int, days: int = 7, window_min: int = 15, q: float = 0.75) -> float | None:

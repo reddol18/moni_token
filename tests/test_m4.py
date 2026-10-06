@@ -29,14 +29,16 @@ def seeded(logs, con):
         record_spike(con, s, T0 + 4 * H)
 
 
-def test_report_data_groups_top_projects_and_other(logs, con):
+def test_report_data_has_limit_series_and_agent_shares(logs, con):
     seeded(logs, con)
     d = build_data(con, T0 + 4 * H, days=1)
-    names = [s["name"] for s in d["series"]]
-    assert len(names) == 7 and names[-1] == "기타"
-    assert all(len(s["values"]) == len(d["bins"]) for s in d["series"])
+    for k in ("five_hour", "seven_day"):
+        s = d[k]
+        assert len(s["m"]) == len(s["e"]) > 0
+    assert d["five_hour"]["current"] is None          # no status line, no calibration -> no % at all
     ev = d["events"][0]
     assert ev["kind"] == "cache_write" and ev["calls"][0]["tools"] == ["Read"]
+    assert abs(sum(g["share"] for g in ev["agents"]) - 1) < 0.01
 
 
 def test_report_is_offline_and_has_no_log_text(logs, con, tmp_path):

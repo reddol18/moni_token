@@ -33,16 +33,16 @@ class CauseParams:
 
 TEMPLATES = {
     "idle_resume": ("공백 후 재개(캐시 만료)",
-                    "{idle:.0f}분 쉰 뒤 첫 호출이 컨텍스트 {write:,}토큰을 캐시에 다시 썼다(${usd:.2f}).",
+                    "{idle:.0f}분 쉰 뒤 첫 호출이 컨텍스트 {write:,}토큰을 캐시에 다시 썼다(이 구간 사용량의 {wshare:.0%}).",
                     "캐시 TTL({ttl})이 지난 큰 대화를 이어 쓰면 대화 전체를 다시 캐시에 쓴다.",
                     "1시간 넘게 쉰 큰 세션은 이어쓰지 말고 새 세션으로 시작하세요."),
     "long_context": ("긴 대화 × 잦은 호출",
-                     "{calls}회 호출, 호출당 컨텍스트 중앙값 {ctx:,}토큰(최대 {ctx_max:,}), 캐시 읽기 ${read:.2f}"
-                     "({share:.0%}).",
+                     "{calls}회 호출, 호출당 컨텍스트 중앙값 {ctx:,}토큰(최대 {ctx_max:,}), 캐시 읽기가 세션 사용량의 "
+                     "{share:.0%}.",
                      "호출마다 긴 대화 전체를 다시 읽어 호출 수만큼 비용이 쌓였다.",
                      "/compact 하거나 새 세션에서 이어가고, 반복 작업은 스크립트로 묶으세요."),
     "cache_miss": ("캐시 미스",
-                   "캐시 쓰기 {write:,}토큰(${usd:.2f}, {share:.0%}), 공백 없는 재기록.",
+                   "캐시 쓰기 {write:,}토큰(세션 사용량의 {share:.0%}), 공백 없는 재기록.",
                    "모델·설정·컨텍스트 변경 등으로 캐시가 무효화된 것으로 보인다.",
                    "작업 중 모델·설정 전환을 줄이세요."),
     "big_input": ("큰 입력",
@@ -58,7 +58,7 @@ TEMPLATES = {
                      "웹 결과가 컨텍스트에 쌓였다.",
                      "조사 범위를 좁히고 결과는 요약만 남기세요."),
     "output_burst": ("출력 폭주",
-                     "output ${usd:.2f}({share:.0%}), {tokens:,}토큰.",
+                     "output {tokens:,}토큰(세션 사용량의 {share:.0%}).",
                      "긴 생성이 비용의 큰 몫을 차지했다.",
                      "긴 결과물은 파일로 쓰게 하고 출력 길이를 제한하세요."),
 }
@@ -74,6 +74,7 @@ class Cause:
     fact_text: str = ""
     interpretation: str = ""   # always an estimate
     advice: str = ""
+    share: float = 0.0         # attributed usage / the window's usage
 
 
 @dataclass
@@ -84,13 +85,14 @@ class Analysis:
     calls: int
     sessions: list[dict] = field(default_factory=list)
     causes: list[Cause] = field(default_factory=list)
+    agents: list[dict] = field(default_factory=list)   # per project folder: share of the window's usage
     note: str = OUTPUT_NOTE
 
     def headline(self) -> str:
         if not self.causes:
-            return f"${self.usd:.2f}, 뚜렷한 원인 규칙 없음"
+            return "뚜렷한 원인 규칙 없음"
         c = self.causes[0]
-        return f"${self.usd:.2f} 중 ${c.usd:.2f}: {c.label}"
+        return f"{c.label} (구간의 {c.usd / self.usd:.0%})" if self.usd else c.label
 
 
 def _make(code, scope, usd, facts, /, **fmt) -> Cause:
@@ -98,7 +100,7 @@ def _make(code, scope, usd, facts, /, **fmt) -> Cause:
     return Cause(code, scope, usd, facts, label, fact_t.format(**fmt), interp.format(**fmt) + " (추정)", advice)
 
 
-def _session_causes(rows, prev_ts, p: CauseParams) -> list[Cause]:
+def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0) -> list[Cause]:
     sid = rows[0]["session_id"]
     parts = {k: sum(r["parts"][k] for r in rows) for k in rows[0]["parts"]}
     total = sum(parts.values()) or 1e-12
@@ -118,7 +120,8 @@ def _session_causes(rows, prev_ts, p: CauseParams) -> list[Cause]:
                 out.append(_make("idle_resume", sid, usd,
                                  dict(idle_min=round(idle, 1), cache_write_tokens=write, usd=round(usd, 4),
                                       ttl="1h" if ttl == p.idle_min_1h else "5m", at_ms=r["ts_ms"]),
-                                 idle=idle, write=write, usd=usd, ttl="1시간" if ttl == p.idle_min_1h else "5분"))
+                                 idle=idle, write=write, wshare=usd / (window_total or total),
+                                 ttl="1시간" if ttl == p.idle_min_1h else "5분"))
         last = r["ts_ms"]
 
     # 2) long context x many calls
@@ -204,7 +207,19 @@ def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams 
         acc += s_usd
         prev = con.execute("SELECT MAX(ts_ms) FROM calls WHERE session_id = ? AND ts_ms < ?",
                            (sid, start_ms)).fetchone()[0]
-        a.causes += _session_causes(rs, prev, p)
+        a.causes += _session_causes(rs, prev, p, total)
+
+    # agent = project folder (subagent / headless calls fold into their project, shown as sub-shares)
+    by_proj: dict[str, list] = {}
+    for r in rows:
+        by_proj.setdefault(r["project"] or r["project_dir"], []).append(r)
+    for name, rs in sorted(by_proj.items(), key=lambda kv: -sum(r["usd"] for r in kv[1])):
+        u = sum(r["usd"] for r in rs) or 1e-12
+        a.agents.append(dict(
+            project=name, calls=len(rs), sessions=len({r["session_id"] for r in rs}),
+            share=round(sum(r["usd"] for r in rs) / total, 4) if total else 0,
+            subagent_share=round(sum(r["usd"] for r in rs if r["is_sidechain"]) / u, 3),
+            headless_share=round(sum(r["usd"] for r in rs if r["entrypoint"] == "sdk-cli") / u, 3)))
 
     # window-level: parallel sessions / subagents / headless
     active = [s for s in a.sessions if s["calls"] >= p.parallel_min_calls]
@@ -216,5 +231,7 @@ def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams 
         a.causes.append(_make("parallel", "all", non_top,
                               dict(active_sessions=len(active), projects=projects, sidechain_calls=side, sdk_calls=sdk),
                               n=len(active), projects=", ".join(projects), side=side, sdk=sdk))
+    for c in a.causes:
+        c.share = round(c.usd / total, 3) if total else 0.0
     a.causes.sort(key=lambda c: -c.usd)
     return a

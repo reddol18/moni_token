@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS events (
     headline TEXT NOT NULL,
     causes_json TEXT NOT NULL,
     sessions_json TEXT NOT NULL,
+    agents_json TEXT,
     spike_json TEXT,
     note TEXT,
     UNIQUE (kind, start_ms, end_ms)
@@ -106,7 +107,7 @@ CREATE TABLE IF NOT EXISTS call_tools (
 """
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 PRESERVE = ("calib_manual",)
 
 

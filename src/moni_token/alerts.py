@@ -22,7 +22,14 @@ def render(s: Spike, a: Analysis | None = None) -> tuple[str, str]:
         idle = f", {e['idle_before_min']:.0f}분 쉰 뒤" if e.get("idle_before_min") else ""
         return ("Claude 사용량: 캐시 재기록",
                 f"{_hm(s.start_ms)} {e['project']} 세션{idle} 한 번에 "
-                f"{e['cache_write_tokens']:,}토큰 재기록(${s.usd:.2f}). 1시간 넘게 쉰 큰 세션은 새 세션으로.")
+                f"{e['cache_write_tokens']:,}토큰 재기록. 1시간 넘게 쉰 큰 세션은 새 세션으로.")
+    if s.kind == "pct":
+        e = s.evidence
+        est = "" if e["basis"] == "measured" else " (추정)"
+        who = ", ".join(f"{g['project']} {g['share']:.0%}" for g in (a.agents[:3] if a else []))
+        cause = f" 원인: {a.causes[0].label}. {a.causes[0].advice}" if a and a.causes else ""
+        return (f"현재 세션 한도 +{e['rise_pp']:.1f}%p{est}",
+                f"{_hm(s.start_ms)}~{_hm(s.end_ms)} {e['from_pct']:.0f}% → {e['to_pct']:.0f}%. {who}.{cause}")
     ratio = f"평소의 {s.ratio:.1f}배" if s.ratio else "쉬던 중 급증"
     head = f"{_hm(s.start_ms)}~{_hm(s.end_ms)} ${s.usd:.2f} ({ratio})."
     if a and a.causes:

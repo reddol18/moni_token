@@ -53,10 +53,10 @@ def usd_between(con: sqlite3.Connection, a_ms: int, b_ms: int) -> float:
         "WHERE ts_ms >= ? AND ts_ms < ?", (a_ms, b_ms)))
 
 
-def statusline_samples(con: sqlite3.Connection) -> list[dict]:
-    """Consecutive observations inside one 5-hour window whose % rose by >= MIN_DELTA_PCT."""
+def statusline_samples(con: sqlite3.Connection, kind: str = "five_hour") -> list[dict]:
+    """Consecutive observations inside one limit window whose % rose by >= MIN_DELTA_PCT."""
     obs = con.execute("SELECT ts_ms, resets_at_ms, used_pct FROM limit_obs WHERE source='statusline' "
-                      "AND kind='five_hour' AND used_pct IS NOT NULL ORDER BY ts_ms").fetchall()
+                      "AND kind=? AND used_pct IS NOT NULL ORDER BY ts_ms", (kind,)).fetchall()
     out, anchor = [], None
     for ts, reset, pct in obs:
         if anchor is None or reset != anchor[1] or pct < anchor[2]:
@@ -80,10 +80,17 @@ def add_manual(con: sqlite3.Connection, start_ms: int, end_ms: int, pct: float, 
     return dict(start_ms=start_ms, end_ms=end_ms, pct=pct, usd=usd_between(con, start_ms, end_ms))
 
 
-def estimate(con: sqlite3.Connection) -> dict | None:
-    samples = sorted(statusline_samples(con) + manual_samples(con), key=lambda s: s["end_ms"])[-RECENT:]
+def estimate(con: sqlite3.Connection, kind: str = "five_hour", min_samples: int = MIN_SAMPLES) -> dict:
+    """Median "usage-$ per 1% of the limit". Manual observations describe the 5-hour window only.
+
+    `reliable` is False below MIN_SAMPLES; callers that draw an estimate line pass min_samples=1 and
+    label it with n so the reader can judge.
+    """
+    manual = manual_samples(con) if kind == "five_hour" else []
+    samples = sorted(statusline_samples(con, kind) + manual, key=lambda s: s["end_ms"])[-RECENT:]
     ratios = [s["usd"] / s["pct"] for s in samples if s["pct"] > 0 and s["usd"] > 0]
-    if len(ratios) < MIN_SAMPLES:
-        return dict(usd_per_pct=None, n=len(ratios), samples=samples)
+    if len(ratios) < max(1, min_samples):
+        return dict(usd_per_pct=None, n=len(ratios), samples=samples, reliable=False)
     q = statistics.quantiles(ratios, n=4) if len(ratios) >= 4 else [min(ratios), None, max(ratios)]
-    return dict(usd_per_pct=statistics.median(ratios), q1=q[0], q3=q[-1], n=len(ratios), samples=samples)
+    return dict(usd_per_pct=statistics.median(ratios), q1=q[0], q3=q[-1], n=len(ratios), samples=samples,
+                reliable=len(ratios) >= MIN_SAMPLES)

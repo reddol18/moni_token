@@ -26,6 +26,7 @@ class SpikeParams:
     single_call_cache_write_tokens: int = 200_000   # one call re-caching this much is an event by itself
     realert_min: int = 30
     escalate_factor: float = 2.0    # re-alert inside realert_min only if ratio grew this much
+    pct_jump: float = 3.0           # 5h limit rising this many %p within window_min is an event (ADR-0003)
 
 
 def load_spike_params(path=None) -> SpikeParams:

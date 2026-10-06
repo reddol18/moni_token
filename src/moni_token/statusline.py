@@ -63,8 +63,15 @@ def main(argv: list[str] | None = None) -> int:
     raw = sys.stdin.buffer.read()
     obs = None
     try:
-        obs = extract(json.loads(raw or b"{}"))
-        record(obs, int(time.time() * 1000))
+        d = json.loads(raw or b"{}")
+        obs = extract(d)
+        now = int(time.time() * 1000)
+        record(obs, now)
+        # diagnostics: was the command invoked, and did Claude Code send rate limits? (booleans only)
+        rl = d.get("rate_limits") or {}
+        (config.data_dir() / "statusline.seen").write_text(json.dumps(dict(
+            ts_ms=now, has_rate_limits="rate_limits" in d, has_five_hour="five_hour" in rl,
+            has_seven_day="seven_day" in rl)), encoding="utf-8")
     except Exception:  # a status line must never break Claude Code
         pass
     if len(argv) >= 2 and argv[0] == "--wrap":
