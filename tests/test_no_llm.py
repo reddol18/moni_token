@@ -24,8 +24,8 @@ def test_no_llm_or_network_imports():
     bad = []
     for f in SRC.rglob("*.py"):
         for mod in _imports(ast.parse(f.read_text(encoding="utf-8"))):
-            if mod == "subprocess" and f.name in ("notify.py", "statusline.py"):
-                continue  # OS notifier / the user's own previous status line; both pinned by tests
+            if mod == "subprocess" and f.name in ("notify.py", "statusline.py", "task.py"):
+                continue  # OS notifier / the user's own previous status line / Task Scheduler; all pinned by tests
             if any(mod == m or mod.startswith(m + ".") for m in FORBIDDEN_MODULES):
                 bad.append(f"{f.name}: {mod}")
     assert not bad, bad

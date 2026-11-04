@@ -73,17 +73,16 @@ start $HOME\.moni_token\report.html
 
 ### 1. 2분마다 갱신 (권장)
 
-`check`는 새 로그를 읽고, 새 급상승이 있으면 데스크톱 알림을 띄우고, 리포트를 다시 씁니다. 1초도 안 걸립니다.
-Windows 작업 스케줄러에 등록하세요(저장소 폴더에서 실행):
+`check`는 새 로그를 읽고, 새 급상승이 있으면 데스크톱 알림을 띄우고, 리포트를 다시 씁니다. 1초 정도 걸립니다.
+Windows 작업 스케줄러에 등록하세요.
 
 ```powershell
-$py = (Resolve-Path .venv\Scripts\pythonw.exe).Path
-$action = New-ScheduledTaskAction -Execute $py -Argument "-m moni_token.cli check"
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)
-Register-ScheduledTask -TaskName "moni_token check" -Action $action -Trigger $trigger
+uv run moni-token install-task                 # 2분마다, 배터리 사용 중에도 실행
+uv run moni-token install-task --no-battery    # 배터리 사용 중에는 쉼
+uv run moni-token uninstall-task               # 해제
 ```
 
-해제: `schtasks /Delete /TN "moni_token check" /F`
+로그인해 있는 동안만 돕니다. `install-task`를 다시 실행하면 기존 작업을 바꾸므로, 배터리 옵션은 언제든 전환할 수 있습니다.
 
 ### 2. 상태줄 기록기 (권장)
 
@@ -119,6 +118,7 @@ uv run moni-token observe --session 49 --session-reset "2026-10-07 02:30" --week
 |---|---|
 | `collect` | 새 로그 줄 읽기(증분: 파일마다 새로 생긴 부분만) |
 | `check` | `collect` + 새 급상승 알림 + 리포트 갱신(작업 스케줄러용) |
+| `install-task [--no-battery]` / `uninstall-task` | 2분 주기 `check` 작업 등록 / 해제(Windows) |
 | `report [--days 7]` | HTML 대시보드 생성 |
 | `status` | 현재 5시간 구간, 속도, 구간 끝 예상치 |
 | `events` | 기록된 급상승 사건과 절약 문장 |

@@ -87,8 +87,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--week-reset")
     p = sub.add_parser("statusline", help="status line command for Claude Code (records numbers only)")
     p.add_argument("--wrap", help="previous status line command to run and display")
+    p = sub.add_parser("install-task", help="register `check` with Windows Task Scheduler (runs on battery by default)")
+    p.add_argument("--interval", type=int, default=2, help="minutes")
+    p.add_argument("--no-battery", action="store_true", help="don't run while on battery")
+    sub.add_parser("uninstall-task", help="remove the scheduled task")
     a = ap.parse_args(argv)
 
+    if a.cmd in ("install-task", "uninstall-task"):
+        from .task import main_install, main_uninstall
+        return main_install(a.interval, not a.no_battery) if a.cmd == "install-task" else main_uninstall()
     if a.cmd == "statusline":   # hot path: no database
         from .statusline import main as sl_main
         return sl_main(["--wrap", a.wrap] if a.wrap else [])

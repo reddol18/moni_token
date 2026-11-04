@@ -76,16 +76,16 @@ That's it for a one-off look. The steps below make it run on its own.
 ### 1. Refresh every 2 minutes (recommended)
 
 `check` collects new log lines, shows a desktop notification for a new spike and rewrites the report. It takes
-well under a second. On Windows, register it with Task Scheduler (run from the repo folder):
+about a second. On Windows, register it with Task Scheduler:
 
 ```powershell
-$py = (Resolve-Path .venv\Scripts\pythonw.exe).Path
-$action = New-ScheduledTaskAction -Execute $py -Argument "-m moni_token.cli check"
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 2)
-Register-ScheduledTask -TaskName "moni_token check" -Action $action -Trigger $trigger
+uv run moni-token install-task                 # every 2 minutes, also on battery
+uv run moni-token install-task --no-battery    # pause while on battery
+uv run moni-token uninstall-task               # remove it
 ```
 
-To remove it: `schtasks /Delete /TN "moni_token check" /F`
+It runs only while you are logged on. Running `install-task` again replaces the task, so you can switch the battery
+option at any time.
 
 ### 2. Status line recorder (recommended)
 
@@ -122,6 +122,7 @@ One reading is enough to draw the estimate. More readings make it more accurate.
 |---|---|
 | `collect` | Read new log lines (incremental; only the new part of each file) |
 | `check` | `collect` + notification for new spikes + report refresh (for the scheduled task) |
+| `install-task [--no-battery]` / `uninstall-task` | Register / remove the 2-minute `check` task (Windows) |
 | `report [--days 7]` | Write the HTML dashboard |
 | `status` | Current 5-hour window, speed and projection |
 | `events` | Recorded spikes with their savings sentence |
