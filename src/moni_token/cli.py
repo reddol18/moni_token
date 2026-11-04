@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import config
-from .alerts import check_and_notify, render
+from .alerts import check_and_notify, live_warning, render, write_live
 from .analysis import analyze
 from .blocks import compute_blocks, status
 from .calibrate import add_manual, add_usage_reading, estimate, ingest_statusline
@@ -145,8 +145,10 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "check":
         t0, c0 = time.perf_counter(), time.process_time()
         collect_all(con, a.projects or config.claude_projects_dir())
-        for s in check_and_notify(con, now_ms(), load_spike_params()):
+        p = load_spike_params()
+        for s in check_and_notify(con, now_ms(), p):
             print(" / ".join(render(s)))
+        write_live(config.live_path(), live_warning(con, now_ms(), p))   # read by the status line
         write_report(con, config.data_dir() / "report.html")
         with open(config.data_dir() / "runs.jsonl", "a", encoding="utf-8") as f:   # M5: resident cost
             f.write(json.dumps(dict(ts_ms=now_ms(), wall_ms=round((time.perf_counter() - t0) * 1000),

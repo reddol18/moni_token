@@ -102,6 +102,22 @@ Claude Code는 상태줄 명령에 실제 한도 %를 넘겨 줍니다. moni_tok
 상태줄에는 `5h 12% ~15:06 · ctx 40%` 같은 내용이 나옵니다. 이미 쓰는 상태줄 명령이 있으면 그대로 두고 감싸면 됩니다:
 `moni-token-statusline.exe --wrap "<기존 명령>"`. 기록은 다음에 새로 여는 Claude Code 세션부터 쌓입니다.
 
+급상승이 진행되는 동안에는 상태줄 맨 앞에 `⚠ +4.0%p · 공백 후 재개(캐시 만료)` 같은 짧은 경고가 붙습니다. 마지막
+`check` 결과에서 가져오며, `realert_min`이 지나면 사라집니다.
+
+**[claude-hud](https://github.com/jarrodwatts/claude-hud)와 함께 쓰기.** moni_token은 HUD 전체를 만들지 않습니다.
+claude-hud를 쓴다면 상태줄 명령은 moni_token으로 두고 claude-hud 명령을 감싸세요. 그러면 한도 숫자가 계속 기록되고,
+경고는 claude-hud 줄 앞에 붙습니다.
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "C:/path/to/moni_token/.venv/Scripts/moni-token-statusline.exe --wrap \"<claude-hud 명령>\""
+}
+```
+
+claude-hud의 `/hud` 설정은 `statusLine`에 자기 명령을 써 넣습니다. 그 뒤에 그 명령을 `--wrap` 안으로 옮기면 됩니다.
+
 ### 3. 상태줄 없이: `/usage` 값을 직접 입력
 
 Claude Code에서 `/usage`를 열고 보이는 숫자를 넣으세요.

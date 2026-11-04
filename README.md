@@ -106,6 +106,22 @@ The status line then shows something like `5h 12% ~15:06 · ctx 40%`. If you alr
 keep it and wrap it: `moni-token-statusline.exe --wrap "<your old command>"`.
 It starts recording from the next new Claude Code session.
 
+While a spike is in progress, the status line starts with a short warning such as `⚠ +4.0%p · Resumed after idle`
+(it comes from the last `check` run and disappears after `realert_min`).
+
+**With [claude-hud](https://github.com/jarrodwatts/claude-hud).** moni_token doesn't try to be a full HUD. If you use
+claude-hud, keep moni_token as the status line command and wrap claude-hud's command, so the limit numbers are still
+recorded and the warning appears in front of claude-hud's line:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "C:/path/to/moni_token/.venv/Scripts/moni-token-statusline.exe --wrap \"<claude-hud's command>\""
+}
+```
+
+claude-hud's `/hud` setup writes its own command into `statusLine`; copy that command into `--wrap` afterwards.
+
 ### 3. Without the status line: enter `/usage` by hand
 
 Type `/usage` in Claude Code and copy the numbers:

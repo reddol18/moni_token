@@ -48,6 +48,35 @@ def test_statusline_prints_utf8_regardless_of_console_code_page(home, monkeypatc
     assert " · ".encode("utf-8") in capsysbinary.readouterr().out   # cp949 would give b"\xa1\xa4"
 
 
+def test_statusline_shows_live_spike_warning(home, monkeypatch, capsys):
+    import time
+    now = int(time.time() * 1000)
+    live = home / "spike_now.json"
+    live.write_text(json.dumps(dict(text="⚠ +4.0%p · 공백 후 재개(캐시 만료)", until_ms=now + 60_000)), encoding="utf-8")
+    out = run_sl(monkeypatch, capsys, json.dumps(SL).encode())
+    assert out.startswith("⚠ +4.0%p · 공백 후 재개(캐시 만료) · 5h 12%")
+    out = run_sl(monkeypatch, capsys, json.dumps(SL).encode(), ["--wrap", "echo hud-line"])
+    assert out.startswith("⚠ +4.0%p") and "hud-line" in out
+    live.write_text(json.dumps(dict(text="old", until_ms=now - 1)), encoding="utf-8")       # expired
+    assert "old" not in run_sl(monkeypatch, capsys, json.dumps(SL).encode())
+    for broken in ("not json", "null", "{}"):
+        live.write_text(broken, encoding="utf-8")
+        assert run_sl(monkeypatch, capsys, json.dumps(SL).encode()).startswith("5h 12%")
+
+
+def test_check_writes_live_warning_for_a_fresh_spike(home, logs, tmp_path, monkeypatch, capsys):
+    from moni_token import alerts
+    from moni_token.cli import main
+    monkeypatch.setattr(alerts, "desktop_notify", lambda t, b: True)
+    now = int(__import__("time").time() * 1000)
+    iso = __import__("test_m2").iso
+    logs.write(logs.path(), logs.human(iso(now - 3 * M)),
+               logs.assistant("m1", iso(now - 2 * M), tools=["Read"], c1=600_000))   # one call re-caches 600k
+    assert main(["--db", str(tmp_path / "x.db"), "--projects", str(logs.root), "check"]) == 0
+    w = json.loads((home / "spike_now.json").read_text(encoding="utf-8"))
+    assert w["text"].startswith("⚠ 캐시 재기록") and w["until_ms"] > now
+
+
 def test_statusline_never_fails(home, monkeypatch, capsys):
     assert run_sl(monkeypatch, capsys, b"not json").strip() == "moni_token"
     assert run_sl(monkeypatch, capsys, b"").strip()

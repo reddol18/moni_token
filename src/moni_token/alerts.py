@@ -1,6 +1,8 @@
 """Turn fresh spikes into desktop notifications, once each. Text is a fixed template (no LLM)."""
+import json
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from .analysis import Analysis
 from .events import record_spike
@@ -41,6 +43,25 @@ def render(s: Spike, a: Analysis | None = None) -> tuple[str, str]:
         where = f" {top['project']}" if top else ""
         return (f"Claude 사용량 급증: {c.label}", f"{head}{where} — {c.fact_text} {c.advice}")
     return ("Claude 사용량 급증", f"{head} 기준 ${s.evidence['threshold_usd']:.2f}. 상세: moni-token events")
+
+
+def live_warning(con: sqlite3.Connection, now_ms: int, p: SpikeParams) -> dict | None:
+    """The spike to show on the status line: the latest event that ended within realert_min (issue #2)."""
+    hold = p.realert_min * 60_000
+    for kind, start, end, causes, spike in con.execute(
+            "SELECT kind, start_ms, end_ms, causes_json, spike_json FROM events WHERE kind IN ('pct','cache_write') "
+            "AND end_ms >= ? AND start_ms <= ? ORDER BY end_ms DESC LIMIT 1", (now_ms - hold, now_ms)):
+        ev = (json.loads(spike or "null") or {}).get("evidence", {})
+        label = (json.loads(causes) or [{}])[0].get("label", "")
+        head = f"+{ev['rise_pp']:.1f}%p" if kind == "pct" and ev.get("rise_pp") is not None else "캐시 재기록"
+        return dict(text="⚠ " + " · ".join(x for x in (head, label) if x), until_ms=end + hold)
+    return None
+
+
+def write_live(path: Path, w: dict | None) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(w, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
 
 
 def check_and_notify(con: sqlite3.Connection, now_ms: int, p: SpikeParams, notify=None) -> list[Spike]:

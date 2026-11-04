@@ -58,14 +58,24 @@ def own_line(obs: dict) -> str:
     return " · ".join(parts) or "moni_token"
 
 
+def warning(now_ms: int) -> str:
+    """The live spike warning written by `check`, or "" (issue #2). Never raises."""
+    try:
+        w = json.loads(config.live_path().read_text(encoding="utf-8"))
+        return str(w["text"]) if w and now_ms < w["until_ms"] else ""
+    except Exception:
+        return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     raw = sys.stdin.buffer.read()
     obs = None
+    now = int(time.time() * 1000)
+    warn = warning(now)
     try:
         d = json.loads(raw or b"{}")
         obs = extract(d)
-        now = int(time.time() * 1000)
         record(obs, now)
         # diagnostics: was the command invoked, and did Claude Code send rate limits? (booleans only)
         rl = d.get("rate_limits") or {}
@@ -77,12 +87,14 @@ def main(argv: list[str] | None = None) -> int:
     if len(argv) >= 2 and argv[0] == "--wrap":
         try:
             r = subprocess.run(argv[1], input=raw, capture_output=True, shell=True, timeout=5)
-            sys.stdout.buffer.write(r.stdout)
+            # the wrapped line keeps its own bytes (and colors); the warning goes in front of its first line
+            sys.stdout.buffer.write((warn + " │ ").encode("utf-8") + r.stdout if warn else r.stdout)
             return 0
         except Exception:
             pass
+    line = own_line(obs) if obs else "moni_token"
     # Claude Code reads UTF-8; print() would use the Windows console code page (cp949 here) and garble "·"
-    sys.stdout.buffer.write(((own_line(obs) if obs else "moni_token") + "\n").encode("utf-8"))
+    sys.stdout.buffer.write(((warn + " · " + line if warn else line) + "\n").encode("utf-8"))
     sys.stdout.flush()
     return 0
 

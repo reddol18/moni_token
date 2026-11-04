@@ -16,5 +16,10 @@ def data_dir() -> Path:
     return Path(env) if env else Path.home() / ".moni_token"
 
 
+def live_path() -> Path:
+    """Current spike warning, written by `check` and read by the status line (issue #2)."""
+    return data_dir() / "spike_now.json"
+
+
 def db_path() -> Path:
     return data_dir() / "usage.db"
