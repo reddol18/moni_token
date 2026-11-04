@@ -117,6 +117,8 @@ claude-hud를 쓴다면 상태줄 명령은 moni_token으로 두고 claude-hud �
 ```
 
 claude-hud의 `/hud` 설정은 `statusLine`에 자기 명령을 써 넣습니다. 그 뒤에 그 명령을 `--wrap` 안으로 옮기면 됩니다.
+Windows(Git Bash)에서는 `--wrap "C:\Users\<사용자>\.claude\plugins\claude-hud\statusline.cmd"`입니다. 따옴표 안에서는
+역슬래시를 써도 됩니다.
 
 ### 3. 상태줄 없이: `/usage` 값을 직접 입력
 

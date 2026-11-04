@@ -121,6 +121,8 @@ recorded and the warning appears in front of claude-hud's line:
 ```
 
 claude-hud's `/hud` setup writes its own command into `statusLine`; copy that command into `--wrap` afterwards.
+On Windows with Git Bash that is `--wrap "C:\Users\<you>\.claude\plugins\claude-hud\statusline.cmd"` (keep the
+quotes; backslashes are fine inside them).
 
 ### 3. Without the status line: enter `/usage` by hand
 
