@@ -3,6 +3,8 @@
 Only counts, sizes, ids and names leave this module; message text is read (to measure size) and dropped.
 """
 import json
+import ntpath
+import posixpath
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,8 +62,34 @@ def _observe_user(d: dict, state: FileState) -> None:
         state.trigger = "human"
 
 
-def call_record(d: dict, project_dir: str, state: FileState) -> tuple[dict, list[tuple[str, str]]] | None:
-    """Build a call row from an assistant line. Returns (row, [(tool_use_id, name)]) or None."""
+PATH_KEYS = ("file_path", "notebook_path", "path")
+
+
+def rel_path(p, cwd: str | None) -> str | None:
+    """Project-relative path of a tool's target (ADR-0004). None when it is outside the project root."""
+    if not isinstance(p, str) or not p or not isinstance(cwd, str) or not cwd:
+        return None
+    mod = ntpath if (":" in cwd[:3] or "\\" in cwd) else posixpath   # logs from Windows or POSIX, on any OS
+    root = mod.normpath(cwd)
+    full = mod.normpath(p if mod.isabs(p) else mod.join(root, p))
+    try:
+        rel = mod.relpath(full, root)   # ntpath compares case-insensitively; other drive -> ValueError
+    except ValueError:
+        return None
+    if rel == ".." or rel.startswith(".." + mod.sep):
+        return None
+    return "" if rel == "." else rel.replace("\\", "/")
+
+
+def _tool_path(b: dict, cwd: str | None) -> str | None:
+    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+    return next((r for k in PATH_KEYS if (r := rel_path(inp.get(k), cwd)) is not None), None)
+
+
+def call_record(d: dict, project_dir: str, state: FileState) -> tuple[dict, list[tuple[str, str, str | None]]] | None:
+    """Build a call row from an assistant line. Returns (row, [(tool_use_id, name, rel_path)]) or None.
+
+    Of a tool's input only the target path is kept, relative to the session's cwd (ADR-0004)."""
     msg = d.get("message") or {}
     usage = msg.get("usage")
     model = msg.get("model")
@@ -90,8 +118,9 @@ def call_record(d: dict, project_dir: str, state: FileState) -> tuple[dict, list
         prev_result_bytes=state.result_bytes, prev_result_image=int(state.result_image),
         prev_attach_bytes=state.attach_bytes,
     )
-    tools = [(b.get("id") or f"{i}", b.get("name") or "?") for i, b in enumerate(msg.get("content") or [])
-             if isinstance(b, dict) and b.get("type") == "tool_use"]
+    row["cwd"] = d.get("cwd") if isinstance(d.get("cwd"), str) else None   # project root for the agent map
+    tools = [(b.get("id") or f"{i}", b.get("name") or "?", _tool_path(b, row["cwd"]))
+             for i, b in enumerate(msg.get("content") or []) if isinstance(b, dict) and b.get("type") == "tool_use"]
     return row, tools
 
 

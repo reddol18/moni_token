@@ -91,7 +91,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--interval", type=int, default=2, help="minutes")
     p.add_argument("--no-battery", action="store_true", help="don't run while on battery")
     sub.add_parser("uninstall-task", help="remove the scheduled task")
+    p = sub.add_parser("map", help="live agent map on http://127.0.0.1:<port>/ (source tree, UI pages, features)")
+    p.add_argument("--port", type=int, default=4990)
+    p.add_argument("--interval", type=float, default=5.0, help="seconds between log collections")
     a = ap.parse_args(argv)
+
+    if a.cmd == "map":
+        from .mapserver import serve
+        serve(a.db or config.db_path(), a.projects or config.claude_projects_dir(), a.port, a.interval)
+        return 0
 
     if a.cmd in ("install-task", "uninstall-task"):
         from .task import main_install, main_uninstall

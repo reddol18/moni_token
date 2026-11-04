@@ -15,7 +15,7 @@ ON CONFLICT(msg_id) DO UPDATE SET
 """
 CALL_COLS = ("msg_id ts ts_ms session_id project_dir project agent_id is_sidechain entrypoint model input output "
              "cache_read cache_5m cache_1h thinking web_search_n web_fetch_n stop_reason trigger "
-             "prev_result_bytes prev_result_image prev_attach_bytes").split()
+             "prev_result_bytes prev_result_image prev_attach_bytes cwd").split()
 _UPSERT = UPSERT_CALL.format(cols=",".join(CALL_COLS), ph=",".join("?" * len(CALL_COLS)))
 
 
@@ -74,8 +74,8 @@ def collect_file(con: sqlite3.Connection, path: Path, projects: Path, stats: Col
                 stats.min_ts_ms = call["ts_ms"]
             con.execute(_UPSERT, [call[c] for c in CALL_COLS])
             if tools:
-                con.executemany("INSERT OR IGNORE INTO call_tools VALUES (?,?,?)",
-                                [(call["msg_id"], tid, name) for tid, name in tools])
+                con.executemany("INSERT OR IGNORE INTO call_tools VALUES (?,?,?,?)",
+                                [(call["msg_id"], tid, name, path) for tid, name, path in tools])
             if call["_results"]:
                 con.executemany("INSERT OR IGNORE INTO tool_results VALUES (?,?,?,?)",
                                 [(tid or f"{call['msg_id']}#{i}", call["msg_id"], size, img)

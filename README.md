@@ -132,6 +132,25 @@ uv run moni-token observe --session 49 --session-reset "2026-10-07 02:30" --week
 
 One reading is enough to draw the estimate. More readings make it more accurate.
 
+## Live agent map
+
+```powershell
+uv run moni-token map          # http://127.0.0.1:4990/
+```
+
+Shows where each agent (main session and subagents) is working right now, in three views of the project:
+
+- **Source tree**: the real directory tree. Files an agent read or edited in the period are bold (red when edited);
+  a ringed dot marks where each running agent is now.
+- **UI pages**: routes found from real files (Next.js `app/` and `pages/`, static `*.html`), highlighted when an agent
+  touches their source.
+- **Features**: sections of a contract document (`docs/PLAN.md`, `PLAN.md`, `SPEC.md`, `docs/tasks/*.md`), linked to
+  files only through paths or unique file names written in backticks in that section; `- [x]` items give progress.
+
+Add `?at=<epoch ms>` to the URL to look at a past moment (the tree is today's). The server listens on 127.0.0.1 only
+and collects new log lines every 5 seconds. From the logs it keeps only tool names and project-relative target paths
+(ADR-0004); subagent task descriptions are not shown.
+
 ## Commands
 
 | Command | What it does |
@@ -140,6 +159,7 @@ One reading is enough to draw the estimate. More readings make it more accurate.
 | `check` | `collect` + notification for new spikes + report refresh (for the scheduled task) |
 | `install-task [--no-battery]` / `uninstall-task` | Register / remove the 2-minute `check` task (Windows) |
 | `report [--days 7]` | Write the HTML dashboard |
+| `map [--port 4990]` | Live agent map on 127.0.0.1 |
 | `status` | Current 5-hour window, speed and projection |
 | `events` | Recorded spikes with their savings sentence |
 | `savings` | What could have been saved this week, by cause |

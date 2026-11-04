@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS calls (
     trigger TEXT,                -- human | tool_result | other
     prev_result_bytes INTEGER NOT NULL,
     prev_result_image INTEGER NOT NULL,
-    prev_attach_bytes INTEGER NOT NULL
+    prev_attach_bytes INTEGER NOT NULL,
+    cwd TEXT                     -- session working directory = project root of the agent map (ADR-0004)
 );
 CREATE INDEX IF NOT EXISTS calls_ts ON calls(ts_ms);
 CREATE INDEX IF NOT EXISTS calls_session ON calls(session_id, ts_ms);
@@ -117,12 +118,14 @@ CREATE TABLE IF NOT EXISTS call_tools (
     msg_id TEXT NOT NULL,
     tool_use_id TEXT NOT NULL,
     name TEXT NOT NULL,
+    path TEXT,                   -- target path relative to cwd, only inside the project (ADR-0004); no other input
     PRIMARY KEY (msg_id, tool_use_id)
 );
+CREATE INDEX IF NOT EXISTS calls_agent ON calls(session_id, agent_id, ts_ms);
 """
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 # user input cannot be rebuilt from the logs: kept across schema rebuilds
 PRESERVE = {"calib_manual": "1=1", "limit_obs": "source IN ('usage', 'manual')"}
 
