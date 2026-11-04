@@ -8,11 +8,23 @@ moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니�
 **어떤 패턴**이었는지(긴 대화에서 도구를 계속 호출, 오래 쉰 큰 세션을 이어 쓰기, 여러 세션을 동시에 돌리기 등),
 다르게 했다면 **얼마나 아낄 수 있었는지** 알려 줍니다.
 
+하는 일은 세 가지입니다.
+
+1. **급상승 설명** — 한도 %의 시간 추이와 급상승 사건, 원인, 절약 가능량을 담은 정적 대시보드(2분마다 갱신,
+   데스크톱 알림).
+2. **진행 중 경고** — Claude Code 상태줄 앞에 `⚠ +4.0%p · 원인` 경고를 붙입니다.
+   [claude-hud](https://github.com/jarrodwatts/claude-hud)를 쓰면 그 줄 앞에 붙습니다.
+3. **에이전트 위치 표시** — 메인 세션과 서브에이전트가 프로젝트의 실제 소스 트리, UI 페이지, 계약 문서의 기능 중
+   어디서 일하는지 보여 주는 실시간 지도.
+
+원칙:
+
 - **LLM을 부르지 않습니다.** 토큰을 아끼려는 도구가 토큰을 쓰면 안 되니까요. 판정은 모두 정해진 규칙으로 하고,
   설명 문장은 템플릿으로 만듭니다.
-- **PC 밖으로 아무것도 보내지 않습니다.** 네트워크를 쓰지 않고, 대시보드는 HTML 파일 하나입니다.
+- **PC 밖으로 아무것도 보내지 않습니다.** 네트워크를 쓰지 않습니다. 대시보드는 HTML 파일이고, 에이전트 지도는
+  127.0.0.1에서만 열립니다.
 - **대화 내용을 저장하지 않습니다.** 숫자(토큰·시각·호출 수)와 메타데이터(세션 id, 프로젝트 폴더 이름, 모델,
-  도구 이름, 크기)만 남깁니다.
+  도구 이름, 크기, 도구가 다룬 프로젝트 기준 상대 경로 — [ADR-0004](docs/adr/0004-agent-map-paths-and-server.md))만 남깁니다.
 - **로그는 읽기만 합니다.** Claude Code의 파일을 고치거나 지우지 않습니다.
 
 ![moni_token 대시보드](docs/img/dashboard.png)
@@ -52,8 +64,11 @@ moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니�
 | [ccusage](https://github.com/ryoppippi/ccusage) | 일·세션·5시간 구간별 토큰과 비용 집계 | 어떤 구간이 *왜* 비쌌는지 설명하고 사건으로 기록 |
 | [Claude Code Usage Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor) | 터미널 실시간 대시보드, 소모 속도, 한도 도달 예측 | 급상승을 세션과 패턴에 연결하고, 다르게 했을 때의 절약량 계산 |
 | ccflare | 토큰·비용·속도 그래프를 보여 주는 로컬 웹 UI | 원인이 붙은 사건 목록과 호출 단위 타임라인 |
+| [claude-hud](https://github.com/jarrodwatts/claude-hud) | 상태줄: 컨텍스트, 한도, 실행 중인 도구·에이전트, 할 일 | claude-hud 줄 앞에 원인이 붙은 급상승 경고(다시 만들지 않고 감싸서 씀) |
+| [agents-observe](https://github.com/simple10/agents-observe) | 훅 이벤트를 로컬 웹 UI로: 서브에이전트 계층, 타임라인, 에이전트별 토큰 | 소스 트리·UI 페이지·계약 문서 기능 위의 위치 표시, 로그로 과거 세션도 읽음, Docker 불필요, 프롬프트·파일 내용 미저장 |
 
-moni_token은 이 도구들을 대체하려는 게 아닙니다. 합계는 ccusage로 보고, 숫자가 이상할 때 moni_token을 쓰면 됩니다.
+moni_token은 이 도구들을 대체하려는 게 아닙니다. 합계는 ccusage, 실시간 HUD는 claude-hud로 보고, 숫자가 이상하거나
+에이전트가 어디서 일하는지 보고 싶을 때 moni_token을 쓰면 됩니다.
 
 ## 설치
 
@@ -135,6 +150,10 @@ uv run moni-token observe --session 49 --session-reset "2026-10-07 02:30" --week
 ```powershell
 uv run moni-token map          # http://127.0.0.1:4990/
 ```
+
+![실시간 에이전트 지도](docs/img/agent-map.png)
+
+<sub>이 기능을 만드는 동안 찍은 이 저장소 자신의 지도입니다. 세션 하나가 고친 파일이 빨강으로 보입니다.</sub>
 
 메인 세션과 서브에이전트가 지금 프로젝트의 어디서 일하는지 세 가지로 보여 줍니다.
 

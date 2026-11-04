@@ -9,11 +9,23 @@ moni_token reads Claude Code's local logs and answers that question. When your l
 session resumed after a long break, several sessions running in parallel, …) and **how much you could have saved**
 by doing it differently.
 
+It does three things:
+
+1. **Explains spikes** — a static dashboard of limit % over time with every spike, its cause and the saving
+   (refreshed every 2 minutes, with a desktop notification).
+2. **Warns while it happens** — a short `⚠ +4.0%p · cause` segment on Claude Code's status line, also in front of
+   [claude-hud](https://github.com/jarrodwatts/claude-hud) if you use it.
+3. **Shows where agents are working** — a live map of the main session and its subagents on the project's real
+   source tree, UI pages and the features of a contract document.
+
+Principles:
+
 - **No LLM calls.** A tool meant to save tokens should not spend them. Every judgement is a fixed rule, and every
   sentence comes from a template.
-- **Nothing leaves your PC.** No network access. The dashboard is a single static HTML file.
+- **Nothing leaves your PC.** No network access. The dashboard is a static HTML file; the agent map is served on
+  127.0.0.1 only.
 - **No conversation text is stored.** Only numbers (tokens, times, call counts) and metadata (session id, project
-  folder name, model, tool names, sizes).
+  folder name, model, tool names, sizes, and the project-relative path a tool worked on — [ADR-0004](docs/adr/0004-agent-map-paths-and-server.md)).
 - **Logs are read-only.** It never changes or deletes Claude Code's files.
 
 ![moni_token dashboard](docs/img/dashboard.png)
@@ -53,8 +65,11 @@ The cause and its numbers are facts from the logs; the interpretation is labelle
 | [ccusage](https://github.com/ryoppippi/ccusage) | Token and cost totals per day, session and 5-hour block | Explains *why* a period was expensive and records it as an incident |
 | [Claude Code Usage Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor) | Live terminal dashboard, burn rate, limit predictions | Attributes a spike to a session and a pattern, with a counterfactual saving |
 | ccflare | Local web UI with token, cost and speed charts | Incident list with causes and per-call timelines |
+| [claude-hud](https://github.com/jarrodwatts/claude-hud) | Status line: context, limits, active tools, running agents, todos | Spike warning with its cause in front of claude-hud's line (moni_token wraps it rather than re-implementing it) |
+| [agents-observe](https://github.com/simple10/agents-observe) | Hook events into a local web UI: subagent tree, timeline, per-agent tokens | Positions on the source tree / UI pages / contract features; reads past sessions from the logs; no Docker, no prompt or file text stored |
 
-moni_token does not try to replace these tools. Use ccusage for totals; use moni_token when a number surprises you.
+moni_token does not try to replace these tools. Use ccusage for totals and claude-hud for the live HUD; use moni_token
+when a number surprises you or you want to see where your agents are.
 
 ## Install
 
@@ -139,6 +154,10 @@ One reading is enough to draw the estimate. More readings make it more accurate.
 ```powershell
 uv run moni-token map          # http://127.0.0.1:4990/
 ```
+
+![Live agent map](docs/img/agent-map.png)
+
+<sub>This repository's own map while this feature was being written: one session, files it edited in red.</sub>
 
 Shows where each agent (main session and subagents) is working right now, in three views of the project:
 

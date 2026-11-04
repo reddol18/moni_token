@@ -1,7 +1,7 @@
 [project]
 name = "moni-token"
-version = "0.1.0"
-description = "Explains why Claude Code usage spiked, from local logs only. No LLM calls, no network."
+version = "0.2.0"
+description = "Explains why Claude Code usage spiked and shows where your agents are working, from local logs only. No LLM calls, no network."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
