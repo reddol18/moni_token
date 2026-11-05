@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from . import config
+from .baseline import baseline
 from .calibrate import estimate
 from .chunks import analyze_chunks
 from .events import list_events
@@ -88,8 +89,11 @@ def header(con: sqlite3.Connection, now_ms: int, live: bool = True) -> dict:
 
 def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7) -> dict:
     start = now_ms - days * DAY
-    fh = _pack(series(con, "five_hour", start, now_ms), now_ms)
-    sd = _pack(series(con, "seven_day", start, now_ms), now_ms)
+    packs = {}
+    for kind in ("five_hour", "seven_day"):
+        s = series(con, kind, start, now_ms)
+        packs[kind] = dict(_pack(s, now_ms), base=baseline(con, kind, s, now_ms))   # issue #8
+    fh, sd = packs["five_hour"], packs["seven_day"]
     events = report_events(con, start, with_calls=True)
     main = [e for e in events if e["kind"] == "pct"] or [e for e in events if e["kind"] == "rate"]
     dg = digest(main, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"])
@@ -144,6 +148,12 @@ tr.ev{cursor:pointer}tr.ev:hover{background:var(--grid)}tr.ev:focus{outline:2px 
 details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.tl td{padding:3px 6px}
 .share{display:flex;height:14px;border-radius:4px;overflow:hidden;margin:6px 0 8px;gap:2px}.share i{display:block;height:100%}
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.ln.u{border-top-color:var(--muted)}.ln.lw{border-top:1.5px solid var(--s2)}
+.bandu{display:inline-block;width:12px;height:10px;background:color-mix(in srgb,var(--muted) 22%,transparent)}
+.vd{font-size:12px;font-weight:500;color:var(--text-secondary)}.vd b{color:var(--text-primary)}
+.vd .st{padding:1px 7px;border-radius:4px;border:1px solid var(--border);margin-right:6px;font-weight:600;color:var(--text-primary)}
+.vd .st.high{border-color:var(--critical)}.vd .st.low{border-color:var(--good)}
+.pace{color:var(--text-secondary);font-size:12px;margin:0 0 4px}.pace .warn{color:var(--critical);font-weight:600}
 """
 
 TEMPLATE = r"""/*HEAD*/<body>/*SHELL*/<main>
@@ -154,12 +164,14 @@ TEMPLATE = r"""/*HEAD*/<body>/*SHELL*/<main>
 <div class="card" id="digest"></div>
 <h2>큰 덩어리 전달 (최근 7일)</h2>
 <div class="card scroll" id="chunks"></div>
-<h2>현재 세션 (5시간 한도)<span class="range" id="r5"></span></h2>
+<h2>현재 세션 (5시간 한도)<span class="vd" id="v5"></span><span class="range" id="r5"></span></h2>
 <div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정(로그 ÷ 보정)</span>
-<span><i class="bandk"></i> 급상승 사건</span><span id="cal5"></span></div><div class="chart" id="c5"></div></div>
-<h2>이번 주 (7일 한도)</h2>
+<span><i class="ln u"></i> 평소(P50)</span><span><i class="bandu"></i> 평소 범위(P25~P75)</span><span><i class="ln lw"></i> 지난주 같은 시각</span>
+<span><i class="bandk"></i> 급상승 사건</span><span id="cal5"></span></div><div class="pace" id="p5"></div><div class="chart" id="c5"></div></div>
+<h2>이번 주 (7일 한도)<span class="vd" id="v7"></span></h2>
 <div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정</span>
-<span id="cal7"></span></div><div class="chart" id="c7"></div></div>
+<span><i class="ln u"></i> 평균 주(P50)</span><span><i class="bandu"></i> 평소 범위(P25~P75)</span><span><i class="ln lw"></i> 지난주</span>
+<span id="cal7"></span></div><div class="pace" id="p7"></div><div class="chart" id="c7"></div></div>
 <h2>급상승 사건</h2>
 <div class="card scroll"><table id="events"><thead><tr><th>시각</th><th>상승</th><th>주 원인</th><th class="n">절약 가능</th><th>에이전트 점유율</th><th>지도</th></tr></thead><tbody></tbody></table>
 <p class="note">행을 누르면 에이전트(프로젝트)별 점유율, 원인 근거, 그 구간의 호출 타임라인이 열립니다. 점유율은 구간 안 로컬 로그 사용량(토큰 종류별 가중) 기준이며 해석은 규칙에 따른 추정입니다.</p></div>
@@ -193,9 +205,18 @@ const calTxt=s=>s.reliable?`보정 표본 ${s.calib_n}건`:`보정 표본 ${s.ca
 $('#cal5').textContent=calTxt(F);$('#cal7').textContent=calTxt(W);
 
 const sec=ms=>ms/1000;
+const rgba=(c,a)=>{const h=/^#([0-9a-f]{6})$/i.exec(c);if(!h)return `rgba(128,128,128,${a})`;const n=parseInt(h[1],16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`};
+// issue #8: is the current usage high for this point of the window? (statistics of earlier windows)
+const dur=ms=>{const m=Math.round(ms/60000);return m<60?m+'분':m<1440?Math.floor(m/60)+'시간 '+(m%60)+'분':Math.floor(m/1440)+'일 '+Math.floor(m%1440/60)+'시간'};
+function verdict(id,pid,S,word){const B=S.base;if(!B)return;const N=B.now||{};
+ const VD={high:['▲ 높음','high'],normal:['● 보통','normal'],low:['▼ 낮음','low']}[B.verdict];
+ $(id).innerHTML=VD?`<span class="st ${VD[1]}">${VD[0]}</span>지금 <b>${pc(N.cur)}</b> · 평소 ${word} ${dur(N.offset_ms)} 시점 ${pc(N.p50)} (P25~P75 ${pc(N.p25)}~${pc(N.p75)}) · 과거 ${N.n}개 구간`:
+  N.offset_ms==null?'<span class="st">—</span>지금 진행 중인 구간 없음':`<span class="st">기록 부족</span>평소와 비교할 과거 구간 ${N.n||0}개 (5개부터)`;
+ const P=B.pace;$(pid).innerHTML=P?`지금 속도(시간당 +${P.per_hour}%p)면 초기화 때 약 <b>${pc(P.at_reset)}</b>`+(P.full_ms?` · <span class="warn">⚠ ${fmt(P.full_ms)}쯤 100% 도달 예상</span>`:'')+' <span class="badge">추정</span>':''}
 function chart(boxId,S,from,events){
- const box=$(boxId);box.innerHTML='';const xs=[],m=[],e=[];
- S.m.forEach((v,i)=>{const t=S.t0+i*S.step;if(t<from)return;xs.push(sec(t));m.push(v);e.push(S.e[i])});
+ const box=$(boxId);box.innerHTML='';const xs=[],m=[],e=[],b50=[],b75=[],b25=[],lw=[],B=S.base||{};
+ S.m.forEach((v,i)=>{const t=S.t0+i*S.step;if(t<from)return;xs.push(sec(t));m.push(v);e.push(S.e[i]);
+  b50.push(B.p50?.[i]??null);b75.push(B.p75?.[i]??null);b25.push(B.p25?.[i]??null);lw.push(B.last_week?.[i]??null)});
  if(!m.some(v=>v!=null)&&!e.some(v=>v!=null)){box.innerHTML='<div class="empty">아직 표시할 % 데이터가 없습니다 (상태줄 실측 또는 보정 표본 필요)</div>';return}
  const line=cssVar('--line'),grid=cssVar('--grid'),muted=cssVar('--muted'),band=cssVar('--band'),crit=cssVar('--critical');
  const evs=(events||[]).filter(x=>x.end>=from);
@@ -211,8 +232,13 @@ function chart(boxId,S,from,events){
     return d.getHours()===0&&d.getMinutes()===0?`${d.getMonth()+1}/${d.getDate()}`:hm(v*1000)})},{stroke:muted,grid:{stroke:grid,width:1},ticks:{show:false},values:(u,t)=>t.map(v=>v+'%'),size:44}],
   series:[{label:'시각',value:(u,v)=>v==null?'—':fmt(v*1000)},
    {label:'실측(상태줄)',stroke:line,width:2,value:fmtV,spanGaps:false},
-   {label:'추정',stroke:line,width:1.5,dash:[4,3],alpha:.8,value:fmtV,spanGaps:false}],
-  hooks:{drawClear:[bands]}},[xs,m,e],box);
+   {label:'추정',stroke:line,width:1.5,dash:[4,3],alpha:.8,value:fmtV,spanGaps:false},
+   {label:'평소 P50',stroke:muted,width:1.5,value:fmtV,spanGaps:false},
+   {label:'P75',stroke:'transparent',width:0,value:fmtV,spanGaps:false},
+   {label:'P25',stroke:'transparent',width:0,value:fmtV,spanGaps:false},
+   {label:'지난주',stroke:cssVar('--s2'),width:1.5,alpha:.9,value:fmtV,spanGaps:false}],
+  bands:[{series:[4,5],fill:rgba(muted,.18)}],
+  hooks:{drawClear:[bands]}},[xs,m,e,b50,b75,b25,lw],box);
  u.over.addEventListener('click',ev=>{if(u.select.width>2)return;const t=u.posToVal(ev.offsetX,'x')*1000,hit=evs.find(x=>x.start<=t&&t<=x.end);if(hit)openEvent(hit.id,true)});
  u.over.title='끌어서 확대 · 더블클릭으로 원래대로 · 빨간 띠를 누르면 사건 상세';
 }
@@ -220,6 +246,7 @@ const RANGES=[['24시간',86400000],['3일',3*86400000],['7일',7*86400000]];let
 RANGES.forEach(([k,v])=>{const b=el('button',{'aria-pressed':v===r5},k);b.onclick=()=>{r5=v;$('#r5').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b));draw()};$('#r5').append(b)});
 const pctEvents=D.events.filter(e=>e.kind==='pct'||e.kind==='cache_write');
 function draw(){chart('#c5',F,D.end-r5,pctEvents);chart('#c7',W,D.start,null)}
+verdict('#v5','#p5',F,'이 구간');verdict('#v7','#p7',W,'이번 주');
 addEventListener('themechange',draw);
 
 const G=D.digest;$('#digest').innerHTML=`<p style="margin:0 0 8px">${esc(G.headline)}</p>`+(G.items.length?'<table class="tl"><tr><th>원인</th><th class="n">사건</th><th class="n">절약 가능</th><th>대안</th></tr>'+G.items.map(d=>`<tr><td>${esc(d.label)}</td><td class="n">${d.events}</td><td class="n">≈ ${d.pp.toFixed(1)}%p</td><td>${esc(d.advice)}<div class="note">${esc(d.alternative)}</div></td></tr>`).join('')+'</table>':'');
