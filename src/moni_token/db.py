@@ -122,12 +122,32 @@ CREATE TABLE IF NOT EXISTS call_tools (
     PRIMARY KEY (msg_id, tool_use_id)
 );
 CREATE INDEX IF NOT EXISTS calls_agent ON calls(session_id, agent_id, ts_ms);
+-- ADR-0005: subagent kind and completion from agent-*.meta.json (no description text)
+CREATE TABLE IF NOT EXISTS agent_meta (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    project_dir TEXT NOT NULL,
+    agent_type TEXT,
+    finished INTEGER NOT NULL,
+    mtime REAL NOT NULL,
+    PRIMARY KEY (session_id, agent_id)
+);
+-- ADR-0005: checklist counts of contract documents, recorded by `check` when they change (no item text)
+CREATE TABLE IF NOT EXISTS checklist_snaps (
+    root TEXT NOT NULL,
+    doc TEXT NOT NULL,           -- path relative to root
+    ts_ms INTEGER NOT NULL,
+    done INTEGER NOT NULL,
+    total INTEGER NOT NULL,
+    PRIMARY KEY (root, doc, ts_ms)
+);
 """
 
 
 SCHEMA_VERSION = 7
 # user input cannot be rebuilt from the logs: kept across schema rebuilds
-PRESERVE = {"calib_manual": "1=1", "limit_obs": "source IN ('usage', 'manual')"}
+PRESERVE = {"calib_manual": "1=1", "limit_obs": "source IN ('usage', 'manual')",
+            "checklist_snaps": "1=1"}   # snapshots are history: the logs cannot rebuild them
 
 
 def connect(path: Path | str) -> sqlite3.Connection:

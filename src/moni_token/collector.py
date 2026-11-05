@@ -102,4 +102,31 @@ def collect(con: sqlite3.Connection, projects: Path) -> CollectStats:
         con.commit()
     if stats.min_ts_ms is not None:
         rebuild_buckets(con, stats.min_ts_ms)
+    collect_agent_meta(con, projects)
     return stats
+
+
+def collect_agent_meta(con: sqlite3.Connection, projects: Path) -> int:
+    """agentType / finished of each subagent (ADR-0005). Only changed meta files are read; no description."""
+    known = {(s, a): m for s, a, m in con.execute("SELECT session_id, agent_id, mtime FROM agent_meta")}
+    n = 0
+    for f in projects.rglob("agent-*.meta.json"):
+        try:
+            rel = f.relative_to(projects).parts
+            st = f.stat()
+        except (OSError, ValueError):
+            continue
+        if len(rel) < 4 or rel[2] != "subagents":
+            continue
+        key = (rel[1], f.name[len("agent-"):-len(".meta.json")])
+        if known.get(key) == st.st_mtime:
+            continue
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        con.execute("INSERT OR REPLACE INTO agent_meta VALUES (?,?,?,?,?,?)",
+                    (*key, rel[0], str(d.get("agentType") or "") or None, int(bool(d.get("finished"))), st.st_mtime))
+        n += 1
+    con.commit()
+    return n

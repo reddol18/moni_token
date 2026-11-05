@@ -21,6 +21,7 @@ from pathlib import Path
 from .blocks import compute_blocks
 from .calibrate import estimate
 from .chunks import measure_results
+from .forecast import forecast_agent, forecast_checklist
 from .parser import rel_path
 from .units import call_usd
 
@@ -276,7 +277,7 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
     cur = next((p for p in projs if p["project_dir"] == project_dir), None) or \
         next((p for p in projs if p["name"] == project_dir), first)
     state = dict(now=now_ms, window_min=window_min, projects=projs, project=cur, agents=[], tree=[], pages=[],
-                 features=[], window=None, costs={})
+                 features=[], window=None, costs={}, docs=[])
     if not cur:
         return state
     root = cur["root"]
@@ -292,9 +293,26 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
         a["touches"] = a["touches"][-200:]
         a["lanes"] = a["lanes"][-400:]
     costs = file_costs(con, cur["project_dir"], root, since, now_ms, ags)
+    for a in ags:   # issue #7: how far along each unfinished subagent probably is
+        a["forecast"] = None
+        if a["agent"] and a["status"] != "done":
+            n, first, usd = run_so_far(con, a["session_id"], a["agent"], now_ms)
+            a["forecast"] = forecast_agent(con, a["type"], cur["project_dir"], n, now_ms - first, usd)
+    docs = sorted({f["doc"] for f in feats})
+    state["docs"] = [dict(doc=d, **forecast_checklist(con, root, d, now_ms)) for d in docs] if root else []
     state.update(agents=ags, tree=entries, pages=pgs, features=feats, costs=costs,
                  window=window_shares(con, now_ms, projs, ags, cur["project_dir"]))
     return state
+
+
+def run_so_far(con: sqlite3.Connection, session_id: str, agent_id: str, now_ms: int) -> tuple[int, int, float]:
+    """Calls, first call time and usage of one agent run up to now (not only inside the map's window)."""
+    n, first, usd = 0, now_ms, 0.0
+    for ts, model, inp, out, cr, c5, c1, web in con.execute(
+            "SELECT ts_ms, model, input, output, cache_read, cache_5m, cache_1h, web_search_n FROM calls "
+            "WHERE session_id IS ? AND agent_id = ? AND ts_ms <= ?", (session_id, agent_id, now_ms)):
+        n, first, usd = n + 1, min(first, ts), usd + call_usd(model, inp, out, cr, c5, c1, web)
+    return n, first, usd
 
 
 def file_costs(con: sqlite3.Connection, project_dir: str, root: str, since_ms: int, now_ms: int,

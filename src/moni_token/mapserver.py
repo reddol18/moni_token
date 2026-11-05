@@ -11,7 +11,9 @@ from urllib.parse import parse_qs, urlparse
 
 from .agentmap import build_state
 from .collector import collect
+from .calibrate import estimate
 from .db import connect
+from .forecast import remaining_usage
 from .report import build_data, header, render
 from .ui import head, shell_html
 
@@ -59,6 +61,9 @@ def make_handler(db: Path, projects: Path):
                     st = build_state(con, projects, now, (q.get("project") or [None])[0],
                                      int((q.get("window") or ["30"])[0]), live=not at)
                     st["header"] = header(con, now, live=not at)
+                    st["usage_forecast"] = remaining_usage([a["forecast"] or {} for a in st["agents"]],
+                                                           estimate(con, "five_hour")["usd_per_pct"],
+                                                           st["header"]["five_hour"]["pct"])
                 finally:
                     con.close()
                 return self._send(200, json.dumps(st, ensure_ascii=False).encode("utf-8"),
@@ -129,7 +134,7 @@ PAGE = r"""/*HEAD*/<body>/*SHELL*/
 <section class="card"><h2>에이전트 타임라인 <span class="k">· 줄마다 한 에이전트, 칸마다 도구 호출. 칸을 누르면 그 파일을 트리에서 보여 줍니다</span></h2>
 <div class="lg" id="lg"></div><div id="lanes"></div></section>
 <div class="cols">
-<section class="card"><h2>에이전트</h2><div id="agents" class="scroll"></div></section>
+<section class="card"><h2>에이전트</h2><div class="k" id="ufc"></div><div id="agents" class="scroll"></div></section>
 <section class="card"><h2>소스 트리 <span class="k">· 굵게 = 다룸, 빨강 = 수정, 막대 = 다룬 횟수, 테두리 점 = 지금 위치</span></h2><div id="tree" class="scroll"></div></section>
 <section class="card"><h2>UI 페이지</h2><div id="pages"></div><h2 style="margin-top:14px">기능 <span class="k">· 계약 문서 기준</span></h2><div id="feats" class="scroll"></div></section>
 </div></div>
@@ -154,10 +159,16 @@ function draw(){if(!D)return;
  if(D.project){proj=D.project.project_dir;sel.value=proj}
  const col={};D.agents.forEach((a,i)=>col[a.key]=i<PAL.length?PAL[i]:'var(--muted)');
  lanes(col);
+ // issue #7: forecast from past runs of the same agentType (estimates, with sample size)
+ const mins=ms=>ms<60000?Math.round(ms/1000)+'초':Math.round(ms/60000)+'분';
+ const fc=f=>{if(!f)return '';if(!f.ok)return `<div class="k">진행 예측: 기록 부족 (비교할 과거 실행 ${f.n}개, 10개부터)</div>`;
+  return `<div class="k">진행 예측 <span class="badge">추정</span> ${f.calls}회째 · 보통 ${f.calls_p50}회(P50)~${f.calls_p85}회(P85)에 끝남 · 남은 시간 ${mins(f.remain_ms_p50)}~${mins(f.remain_ms_p85)} · 과거 ${f.n}건${f.scope==='all'?'(전 프로젝트)':''}</div>
+  <div class="meter" title="P50 기준 진행률"><i style="width:${Math.round((f.progress||0)*100)}%"></i></div>`};
+ const UF=D.usage_forecast;$('#ufc').innerHTML=UF?`실행 중 에이전트 ${UF.agents}개가 더 쓸 양 ≈ <b>+${UF.pp_p50}~${UF.pp_p85}%p</b> (5시간 한도, P50~P85 추정)${UF.over_limit_p85?' <span class="warn">· P85면 한도를 넘음</span>':''}`:'';
  $('#agents').innerHTML=D.agents.map(a=>{const t=a.touches.at(-1);
   return `<div class="ag"><div><span class="sw" style="background:${col[a.key]}"></span><b>${esc(a.type)}</b> <span class="badge ${a.status==='running'?'run':a.status==='done'?'done':''}">${ST[a.status]}</span> <span class="k mono">${esc(a.session)}${a.agent?' · '+esc(a.agent.slice(0,8)):''}</span></div>
   ${a.desc?`<div>${esc(a.desc)}</div>`:''}<div class="k">${a.calls}회 호출 · ${(a.tokens/1000).toFixed(0)}k 토큰 · 마지막 ${ago(a.last_ms)}${a.tool?' · '+esc(a.tool):''}${wsh(a.win)}</div>
-  ${t?`<div class="path mono">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">페이지 ${esc(t.page)}</div>`:''}${t.features.length?`<div class="k">기능 ${t.features.map(i=>esc(D.features[i].title)).join(', ')}</div>`:''}`:'<div class="k">아직 파일을 다루지 않음</div>'}${a.top_file&&a.top_file.carried>=1000?`<div class="k">가장 무거운 파일 <span class="mono">${esc(a.top_file.path)}</span> · 끌고 다닌 양 ${tk(a.top_file.carried)}</div>`:''}</div>`}).join('')||'<p class="empty">이 기간에 활동한 에이전트가 없습니다.</p>';
+  ${t?`<div class="path mono">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">페이지 ${esc(t.page)}</div>`:''}${t.features.length?`<div class="k">기능 ${t.features.map(i=>esc(D.features[i].title)).join(', ')}</div>`:''}`:'<div class="k">아직 파일을 다루지 않음</div>'}${fc(a.forecast)}${a.top_file&&a.top_file.carried>=1000?`<div class="k">가장 무거운 파일 <span class="mono">${esc(a.top_file.path)}</span> · 끌고 다닌 양 ${tk(a.top_file.carried)}</div>`:''}</div>`}).join('')||'<p class="empty">이 기간에 활동한 에이전트가 없습니다.</p>';
  tree(col);pagesFeats(col)}
 function lanes(col){
  const box=$('#lanes'),W=box.clientWidth||900,L=230,R=10,rh=22,ags=D.agents.filter(a=>a.lanes.length);
@@ -197,8 +208,10 @@ function tree(col){
 function pagesFeats(col){
  const usedPg=new Set(),usedF={};D.agents.forEach(a=>a.touches.forEach(t=>{if(t.page)usedPg.add(t.page);t.features.forEach(i=>(usedF[i]??=new Set()).add(a.key))}));
  $('#pages').innerHTML=D.pages.length?D.pages.map(p=>`<div class="pg ${usedPg.has(p.route)?'on':''}"><span class="mono">${esc(p.route)}</span> <span class="k">${esc(p.file)}</span></div>`).join(''):'<p class="empty">UI 페이지를 찾지 못했습니다(Next.js app/·pages/, *.html 기준).</p>';
- $('#feats').innerHTML=D.features.length?D.features.map((f,i)=>`<div class="ft ${usedF[i]?'on':''}"><div><b>${esc(f.title)}</b> ${[...(usedF[i]||[])].map(k=>`<span class="sw" style="background:${col[k]}"></span>`).join('')}</div>
-  <div class="k">${esc(f.doc)}${f.total?` · 완료 ${f.done}/${f.total}`:''}${f.paths.length?` · 연결 ${f.paths.length}곳`:''}</div>${f.total?`<div class="meter"><i style="width:${f.done/f.total*100}%"></i></div>`:''}</div>`).join(''):'<p class="empty">계약 문서(docs/PLAN.md, PLAN.md, SPEC.md, docs/tasks/*.md)가 없거나, 경로·체크리스트가 적혀 있지 않습니다.</p>'}
+ const day=ms=>{const d=new Date(ms);return `${d.getMonth()+1}/${d.getDate()} ${d.toTimeString().slice(0,5)}`};
+ const docf=(D.docs||[]).filter(d=>d.total).map(d=>`<div class="k"><span class="mono">${esc(d.doc)}</span> 완료 ${d.done}/${d.total}${d.left===0?' · 다 끝남':d.ok?` · 남은 ${d.left}개 완료 예상 ${day(d.eta_p50)}(P50)~${day(d.eta_p85)}(P85) <span class="badge">추정</span>`:` · 완료 예측: 기록 부족 (완료 ${d.steps}번 관측, 3번부터)`}</div>`).join('');
+ $('#feats').innerHTML=docf+(D.features.length?D.features.map((f,i)=>`<div class="ft ${usedF[i]?'on':''}"><div><b>${esc(f.title)}</b> ${[...(usedF[i]||[])].map(k=>`<span class="sw" style="background:${col[k]}"></span>`).join('')}</div>
+  <div class="k">${esc(f.doc)}${f.total?` · 완료 ${f.done}/${f.total}`:''}${f.paths.length?` · 연결 ${f.paths.length}곳`:''}</div>${f.total?`<div class="meter"><i style="width:${f.done/f.total*100}%"></i></div>`:''}</div>`).join(''):'<p class="empty">계약 문서(docs/PLAN.md, PLAN.md, SPEC.md, docs/tasks/*.md)가 없거나, 경로·체크리스트가 적혀 있지 않습니다.</p>')}
 $('#proj').onchange=e=>{proj=e.target.value;open=new Set();focusPath=null;tick()};$('#win').onchange=tick;
 $('#q').oninput=()=>{if(D)tree(Object.fromEntries(D.agents.map((a,i)=>[a.key,i<PAL.length?PAL[i]:'var(--muted)'])))};
 addEventListener('resize',()=>{clearTimeout(window._r);window._r=setTimeout(draw,150)});addEventListener('themechange',draw);

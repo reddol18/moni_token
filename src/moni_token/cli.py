@@ -15,6 +15,7 @@ from .chunks import analyze_chunks
 from .collector import collect
 from .db import connect
 from .events import list_events, record, record_spike
+from .forecast import backtest, snapshot_checklists
 from .report import report_events, write_report
 from .summary import digest
 from .settings import load_spike_params
@@ -93,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--map", action="store_true", help="also start the agent map server at logon")
     p.add_argument("--map-port", type=int, default=4990)
     sub.add_parser("uninstall-task", help="remove the scheduled tasks (check and map)")
+    sub.add_parser("forecast", help="progress forecast quality: backtest P50/P85 coverage on past subagent runs")
     p = sub.add_parser("map", help="live agent map on http://127.0.0.1:<port>/ (source tree, UI pages, features)")
     p.add_argument("--port", type=int, default=4990)
     p.add_argument("--interval", type=float, default=5.0, help="seconds between log collections")
@@ -165,6 +167,9 @@ def main(argv: list[str] | None = None) -> int:
         for s in check_and_notify(con, now_ms(), p):
             print(" / ".join(render(s)))
         write_live(config.live_path(), live_warning(con, now_ms(), p))   # read by the status line
+        roots = [r for (r,) in con.execute("SELECT DISTINCT cwd FROM calls WHERE agent_id IS NULL AND cwd IS NOT NULL "
+                                           "AND ts_ms >= ?", (now_ms() - 7 * 86_400_000,))]
+        snapshot_checklists(con, roots, now_ms())   # ADR-0005: checklist history for the progress forecast
         write_report(con, config.data_dir() / "report.html")
         with open(config.data_dir() / "runs.jsonl", "a", encoding="utf-8") as f:   # M5: resident cost
             f.write(json.dumps(dict(ts_ms=now_ms(), wall_ms=round((time.perf_counter() - t0) * 1000),
@@ -239,6 +244,16 @@ def main(argv: list[str] | None = None) -> int:
             record_spike(con, s, now_ms())
             n += 1
         print(f"recorded {n} events")
+    elif a.cmd == "forecast":
+        collect_all(con, a.projects or config.claude_projects_dir())
+        b = backtest(con)
+        if not b["cases"]:
+            print("not enough finished subagent runs to backtest")
+        else:
+            print(f"backtest at 1, 2, 4, … calls: {b['inside_p85']}/{b['cases']} forecasts within the P85 "
+                  f"call count ({b['coverage']:.1%}; target ~85%), {b['coverage_p50']:.1%} within P50 (target ~50%)")
+            for t, v in sorted(b["by_type"].items(), key=lambda kv: -kv[1]["cases"]):
+                print(f"  {t:<28} {v['cases']:>5} cases  P85 {v['coverage']:.1%}  P50 {v['coverage_p50']:.1%}")
     elif a.cmd == "suggest-floor":
         v = suggest_floor(con, now_ms())
         print("no data" if v is None else f"p75 of active 15-min windows (7 days): ${v:.2f}")

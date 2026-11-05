@@ -180,6 +180,14 @@ Shows where each agent (main session and subagents) is working right now:
 - **Features**: sections of a contract document (`docs/PLAN.md`, `PLAN.md`, `SPEC.md`, `docs/tasks/*.md`), linked to
   files only through paths or unique file names written in backticks in that section; `- [x]` items give progress.
 
+**Progress forecast** ([ADR-0005](docs/adr/0005-progress-forecast.md)): each unfinished subagent is compared with
+finished runs of the same kind (`agentType`) that got at least as far, e.g. "call 4 · usually done by 21 (P50) – 46
+(P85) · 3–9 min left · 193 past runs". Fewer than 10 comparable runs shows "not enough history". The agents panel
+also shows how much of the 5-hour limit the running agents will probably still use (≈ +%p, P50–P85) and warns when
+P85 would cross 100%. Contract documents get a completion estimate from the pace of past checklist ticks (snapshots
+taken by `check`). `moni-token forecast` replays the past to check the ranges: on the author's PC, 92% of forecasts
+fell within P85 and 59% within P50 — slightly wide, on the safe side.
+
 The same server also serves the usage page at **http://127.0.0.1:4990/usage**, built from live data. Both pages share
 a top line with the current 5-hour and weekly limit % and the live spike warning. Every spike on the usage page has a
 **"그때 지도" (map at that time)** link that opens the map at the spike's end, on its top project; on the map, each agent and
@@ -198,6 +206,7 @@ and collects new log lines every 5 seconds. From the logs it keeps only tool nam
 | `install-task [--no-battery]` / `uninstall-task` | Register / remove the 2-minute `check` task (Windows) |
 | `report [--days 7]` | Write the HTML dashboard |
 | `map [--port 4990]` | Live agent map on 127.0.0.1 |
+| `forecast` | Backtest the progress forecast on past subagent runs (P50/P85 coverage) |
 | `status` | Current 5-hour window, speed and projection |
 | `events` | Recorded spikes with their savings sentence |
 | `savings` | What could have been saved this week, by cause |
