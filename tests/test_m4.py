@@ -46,12 +46,15 @@ def test_report_is_offline_and_has_no_log_text(logs, con, tmp_path):
     out = write_report(con, tmp_path / "r.html", now_ms=T0 + 4 * H, days=1)
     html = out.read_text(encoding="utf-8")
     assert SECRET not in html
-    assert not re.search(r"""(src|href)\s*=\s*["']?https?:""", html), "external resource"
-    assert "fetch(" not in html and "XMLHttpRequest" not in html
+    # links to the local map server (127.0.0.1) are navigation, not resources; nothing else may point outside
+    assert not re.search(r"""(src|href)\s*=\s*["']?https?://(?!127\.0\.0\.1[:/])""", html), "external resource"
+    assert not re.search(r"""\bsrc\s*=\s*["']?https?:""", html), "loads a remote resource"
+    assert "fetch(" not in html and "XMLHttpRequest" not in html and "@import" not in html
     blob = re.search(r'<script id="data" type="application/json">(.*?)</script>', html, re.S).group(1)
     assert json.loads(blob)["events"]
 
 
 def test_embedded_json_cannot_break_out_of_script():
     html = render({"x": "</script><script>alert(1)</script>", "events": []})
-    assert html.count("</script>") == 2   # data block + main script, nothing injected
+    # theme script (head) + data block + vendored uPlot + main script, nothing injected
+    assert html.count("</script>") == 4

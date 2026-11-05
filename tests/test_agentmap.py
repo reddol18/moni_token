@@ -179,6 +179,23 @@ def test_usage_page_links_spikes_to_the_map():
     assert "그때 지도" in served and "?at=${e.end}" in served
 
 
+def test_served_pages_are_self_contained():
+    """Issue #5: shared shell on both pages, uPlot inlined from the vendored copy with its licence, no remote loads."""
+    import re
+    from moni_token import ui
+    from moni_token.report import render
+    assert (ui.VENDOR / "LICENSE").read_text(encoding="utf-8").startswith("The MIT License")
+    data = dict(generated=0, start=0, end=1, five_hour={}, seven_day={}, events=[], statusline=None,
+                digest=dict(headline="", items=[]), chunks=dict(overall=dict(chunks=0, token_share=0, cost_share=0),
+                                                                 agents=[], min_tokens=5000), header={})
+    for html, current in ((render(data, map_base=""), "usage"), (mapserver.page(), "map")):
+        assert 'class="shell"' in html and "toggleTheme" in html
+        assert re.search(r'<a href="[^"]*"\s*aria-current=page', html)
+        assert not re.search(r"""\b(src|href)\s*=\s*["']?https?://""", html), current
+        assert "@import" not in html and "<link" not in html
+    assert "uPlot" in render(data, map_base="") and "new uPlot(" in render(data, map_base="")
+
+
 def test_server_is_loopback_only_and_checks_host(logs, tmp_path):
     assert mapserver.HOST == "127.0.0.1"
     srv = ThreadingHTTPServer((mapserver.HOST, 0), mapserver.make_handler(tmp_path / "m.db", logs.root))

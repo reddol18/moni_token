@@ -16,6 +16,7 @@ from .chunks import analyze_chunks
 from .events import list_events
 from .summary import _pp, best_alternative, digest, event_summary
 from .pctseries import pct_at, series
+from .ui import head, shell_html, uplot_js
 
 DAY = 86_400_000
 MAX_TIMELINE_CALLS = 400
@@ -103,7 +104,9 @@ def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7) -> dict:
 
 def render(data: dict, map_base: str = MAP_BASE) -> str:
     payload = json.dumps(dict(data, map_base=map_base), ensure_ascii=False).replace("</", "<\\/")
-    return TEMPLATE.replace("/*DATA*/null", payload)
+    return (TEMPLATE.replace("/*HEAD*/", head("moni_token 사용량", USAGE_CSS))
+            .replace("/*SHELL*/", shell_html("usage", map_base)).replace("/*UPLOT*/", uplot_js())
+            .replace("/*DATA*/null", payload))
 
 
 def write_report(con: sqlite3.Connection, out: Path, now_ms: int | None = None, days: int = 7) -> Path:
@@ -115,22 +118,8 @@ def write_report(con: sqlite3.Connection, out: Path, now_ms: int | None = None, 
     return out
 
 
-TEMPLATE = r"""<!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>moni_token 한도 사용률</title>
-<style>
-:root{--bg:#f4f4f2;--surface-1:#fcfcfb;--text-primary:#1a1a19;--text-secondary:#57564f;--muted:#8a897f;--grid:#e4e3dd;
---border:#d9d8d1;--line:#2a78d6;--band:rgba(196,43,42,.08);--critical:#c42b2a;--warn:#b86e00;
---s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;--s5:#e87ba4;--s6:#008300;--s7:#4a3aa7}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121211;--surface-1:#1a1a19;--text-primary:#fff;
---text-secondary:#c3c2b7;--muted:#8f8e85;--grid:#2c2c2a;--border:#3a3a37;--line:#3987e5;--band:rgba(230,103,103,.12);
---critical:#e66767;--warn:#e0a030;--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;--s7:#9085e9}}
-:root[data-theme="dark"]{--bg:#121211;--surface-1:#1a1a19;--text-primary:#fff;--text-secondary:#c3c2b7;--muted:#8f8e85;
---grid:#2c2c2a;--border:#3a3a37;--line:#3987e5;--band:rgba(230,103,103,.12);--critical:#e66767;--warn:#e0a030;
---s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;--s7:#9085e9}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text-primary);
-font:14px/1.5 system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif}
-main{max-width:1200px;margin:0 auto;padding:24px 16px 64px}
+USAGE_CSS = r"""
+main{max-width:1280px;margin:0 auto;padding:18px 16px 64px}
 h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 10px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
 .sub{color:var(--text-secondary);margin:0 0 20px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
@@ -145,24 +134,19 @@ h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 10px;display:fl
 .range{margin-left:auto;display:flex;gap:4px}.range button{font:inherit;font-size:12px;padding:2px 10px;border-radius:6px;
 border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer}
 .range button[aria-pressed=true]{background:var(--text-primary);color:var(--surface-1)}
-.chart{width:100%;position:relative}svg text{fill:var(--muted);font-size:11px}
+.chart{width:100%;position:relative;min-height:240px}.chart .empty{color:var(--muted);padding:80px 0;text-align:center}
 .tip{position:absolute;pointer-events:none;background:var(--surface-1);border:1px solid var(--border);border-radius:8px;
 padding:8px 10px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:none;z-index:2;white-space:nowrap}
 .tip b{font-size:16px}
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);vertical-align:top}
-th{color:var(--text-secondary);font-weight:500;font-size:12px}td.n,th.n{text-align:right}
 tr.ev{cursor:pointer}tr.ev:hover{background:var(--grid)}tr.ev:focus{outline:2px solid var(--line)}
 .detail td{background:var(--bg)}.cause{margin:6px 0 10px}.cause b{display:block}
 .interp{color:var(--text-secondary)}.adv{color:var(--line)}.note{color:var(--muted);font-size:12px}.scroll{overflow-x:auto}
 details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.tl td{padding:3px 6px}
 .share{display:flex;height:14px;border-radius:4px;overflow:hidden;margin:6px 0 8px;gap:2px}.share i{display:block;height:100%}
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
-.badge{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);color:var(--text-secondary)}
-nav.top{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;font-size:13px}
-nav.top a{color:var(--line)}nav.top b{color:var(--text-primary)}.warn{color:var(--critical);font-weight:600}
-</style></head><body><main>
-<nav class="top" id="nav"></nav>
+"""
+
+TEMPLATE = r"""/*HEAD*/<body>/*SHELL*/<main>
 <h1>Claude 한도 사용률 · 급상승 원인</h1>
 <p class="sub" id="gen"></p>
 <div class="tiles" id="tiles"></div>
@@ -181,6 +165,7 @@ nav.top a{color:var(--line)}nav.top b{color:var(--text-primary)}.warn{color:var(
 <p class="note">행을 누르면 에이전트(프로젝트)별 점유율, 원인 근거, 그 구간의 호출 타임라인이 열립니다. 점유율은 구간 안 로컬 로그 사용량(토큰 종류별 가중) 기준이며 해석은 규칙에 따른 추정입니다.</p></div>
 </main>
 <script id="data" type="application/json">/*DATA*/null</script>
+<script>/*UPLOT*/</script>
 <script>
 const D=JSON.parse(document.getElementById('data').textContent);
 const $=s=>document.querySelector(s), el=(t,a={},h='')=>{const e=document.createElement(t);for(const k in a)e.setAttribute(k,a[k]);e.innerHTML=h;return e};
@@ -207,42 +192,35 @@ $('#tiles').innerHTML=tile('현재 세션 (5시간)',F.current,F.basis,F.reset?`
 const calTxt=s=>s.reliable?`보정 표본 ${s.calib_n}건`:`보정 표본 ${s.calib_n||0}건 · 3건부터 추정선 표시`;
 $('#cal5').textContent=calTxt(F);$('#cal7').textContent=calTxt(W);
 
-function niceTicks(a,b,W){const span=b-a, H=3600000, opts=[H,3*H,6*H,12*H,24*H];
- const st=opts.find(o=>span/o<=Math.max(4,W/110))||24*H, out=[];let t=new Date(a);t.setMinutes(0,0,0);
- t=+t;while(t%st&&st<24*H)t+=H;if(st===24*H){const d=new Date(a);d.setHours(24,0,0,0);t=+d}
- for(;t<=b;t+=st)out.push(t);return {ticks:out,st}}
-function line(boxId,S,from,events){
- const box=$(boxId),W=box.clientWidth,H=Math.max(200,Math.min(300,W*.3)),m={l:40,r:10,t:12,b:24},iw=W-m.l-m.r,ih=H-m.t-m.b;
- const to=D.end,x=t=>m.l+(t-from)/(to-from)*iw,y=v=>m.t+ih-Math.min(100,v)/100*ih;
- let g='';
- for(const v of [0,25,50,75,100])g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${m.l-6}" y="${y(v)+4}" text-anchor="end">${v}%</text>`;
- const {ticks,st}=niceTicks(from,to,iw);for(const t of ticks)g+=`<text x="${x(t)}" y="${H-6}" text-anchor="middle">${st>=86400000?fmt(t).slice(0,5):hm(t)==='00:00'?fmt(t).slice(0,5):hm(t)}</text>`;
- for(const [a] of S.windows)if(a>from&&a<to)g+=`<line x1="${x(a)}" x2="${x(a)}" y1="${m.t}" y2="${m.t+ih}" stroke="var(--grid)" stroke-dasharray="2 3"/>`;
- for(const e of events||[]){if(e.end<from)continue;const a=Math.max(x(e.start),m.l),b=Math.max(x(e.end),a+2);
-  g+=`<rect class="evb" data-id="${e.id}" x="${a}" y="${m.t}" width="${b-a}" height="${ih}" fill="var(--band)" stroke="var(--critical)" stroke-opacity=".5" style="cursor:pointer"/>`}
- const path=(arr)=>{let d='',on=false;arr.forEach((v,i)=>{const t=S.t0+i*S.step;if(t<from||v==null){on=false;return}
-  d+=(on?'L':'M')+x(t).toFixed(1)+','+y(v).toFixed(1);on=true});return d};
- const pe=path(S.e),pm=path(S.m);
- if(pe)g+=`<path d="${pe}" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 3" opacity=".75"/>`;
- if(pm)g+=`<path d="${pm}" fill="none" stroke="var(--line)" stroke-width="2"/>`;
- if(!pe&&!pm)g+=`<text x="${m.l+iw/2}" y="${m.t+ih/2}" text-anchor="middle" style="font-size:13px">아직 표시할 % 데이터가 없습니다 (상태줄 실측 또는 보정 표본 필요)</text>`;
- g+=`<line class="xh" y1="${m.t}" y2="${m.t+ih}" stroke="var(--text-secondary)" visibility="hidden"/><circle class="dot" r="4" fill="var(--line)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>`;
- box.innerHTML=`<svg width="${W}" height="${H}" role="img" aria-label="한도 사용률 추이">${g}</svg><div class="tip"></div>`;
- const svg=box.querySelector('svg'),tip=box.querySelector('.tip'),xh=box.querySelector('.xh'),dot=box.querySelector('.dot');
- svg.onmousemove=ev=>{const r=svg.getBoundingClientRect(),px=ev.clientX-r.left;if(px<m.l){return}
-  const t=from+(px-m.l)/iw*(to-from),i=Math.round((t-S.t0)/S.step);if(i<0||i>=S.e.length)return;
-  const tt=S.t0+i*S.step,mv=S.m[i],evv=S.e[i],v=mv??evv;xh.setAttribute('x1',x(tt));xh.setAttribute('x2',x(tt));xh.setAttribute('visibility','visible');
-  if(v!=null){dot.setAttribute('cx',x(tt));dot.setAttribute('cy',y(v));dot.setAttribute('visibility','visible')}else dot.setAttribute('visibility','hidden');
-  const e=(events||[]).find(e=>e.start<=tt&&tt<e.end);
-  tip.innerHTML=`<div>${fmt(tt)}</div><b>${pc(v)}</b> <span class="badge">${mv!=null?'실측':evv!=null?'추정':'없음'}</span>`+(e?`<div style="color:var(--critical)">+${e.rise}%p · ${esc(e.causes[0]?.label||'')}</div>`:'');
-  tip.style.display='block';tip.style.left=Math.min(px+12,W-200)+'px';tip.style.top='4px'};
- svg.onmouseleave=()=>{tip.style.display='none';xh.setAttribute('visibility','hidden');dot.setAttribute('visibility','hidden')};
- svg.querySelectorAll('.evb').forEach(b=>b.onclick=()=>openEvent(+b.dataset.id,true));
+const sec=ms=>ms/1000;
+function chart(boxId,S,from,events){
+ const box=$(boxId);box.innerHTML='';const xs=[],m=[],e=[];
+ S.m.forEach((v,i)=>{const t=S.t0+i*S.step;if(t<from)return;xs.push(sec(t));m.push(v);e.push(S.e[i])});
+ if(!m.some(v=>v!=null)&&!e.some(v=>v!=null)){box.innerHTML='<div class="empty">아직 표시할 % 데이터가 없습니다 (상태줄 실측 또는 보정 표본 필요)</div>';return}
+ const line=cssVar('--line'),grid=cssVar('--grid'),muted=cssVar('--muted'),band=cssVar('--band'),crit=cssVar('--critical');
+ const evs=(events||[]).filter(x=>x.end>=from);
+ const bands=u=>{const c=u.ctx,{top,height}=u.bbox;c.save();
+  for(const [a] of S.windows){const x=u.valToPos(sec(a),'x',true);if(x>u.bbox.left&&x<u.bbox.left+u.bbox.width){c.strokeStyle=grid;c.setLineDash([2,3]);c.beginPath();c.moveTo(x,top);c.lineTo(x,top+height);c.stroke()}}
+  c.setLineDash([]);for(const v of evs){const x0=u.valToPos(sec(v.start),'x',true),x1=Math.max(u.valToPos(sec(v.end),'x',true),x0+2);
+   c.fillStyle=band;c.fillRect(x0,top,x1-x0,height);c.strokeStyle=crit;c.globalAlpha=.5;c.strokeRect(x0,top,x1-x0,height);c.globalAlpha=1}
+  c.restore()};
+ const fmtV=(u,v)=>v==null?'—':pc(v);
+ const u=new uPlot({width:box.clientWidth,height:240,cursor:{sync:{key:'moni'},drag:{x:true,y:false}},
+  scales:{x:{time:true},y:{range:[0,100]}},legend:{live:true},
+  axes:[{stroke:muted,grid:{stroke:grid,width:1},ticks:{stroke:grid},values:(u,t)=>t.map(v=>{const d=new Date(v*1000);
+    return d.getHours()===0&&d.getMinutes()===0?`${d.getMonth()+1}/${d.getDate()}`:hm(v*1000)})},{stroke:muted,grid:{stroke:grid,width:1},ticks:{show:false},values:(u,t)=>t.map(v=>v+'%'),size:44}],
+  series:[{label:'시각',value:(u,v)=>v==null?'—':fmt(v*1000)},
+   {label:'실측(상태줄)',stroke:line,width:2,value:fmtV,spanGaps:false},
+   {label:'추정',stroke:line,width:1.5,dash:[4,3],alpha:.8,value:fmtV,spanGaps:false}],
+  hooks:{drawClear:[bands]}},[xs,m,e],box);
+ u.over.addEventListener('click',ev=>{if(u.select.width>2)return;const t=u.posToVal(ev.offsetX,'x')*1000,hit=evs.find(x=>x.start<=t&&t<=x.end);if(hit)openEvent(hit.id,true)});
+ u.over.title='끌어서 확대 · 더블클릭으로 원래대로 · 빨간 띠를 누르면 사건 상세';
 }
 const RANGES=[['24시간',86400000],['3일',3*86400000],['7일',7*86400000]];let r5=86400000;
 RANGES.forEach(([k,v])=>{const b=el('button',{'aria-pressed':v===r5},k);b.onclick=()=>{r5=v;$('#r5').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b));draw()};$('#r5').append(b)});
 const pctEvents=D.events.filter(e=>e.kind==='pct'||e.kind==='cache_write');
-function draw(){line('#c5',F,D.end-r5,pctEvents);line('#c7',W,D.start,null)}
+function draw(){chart('#c5',F,D.end-r5,pctEvents);chart('#c7',W,D.start,null)}
+addEventListener('themechange',draw);
 
 const G=D.digest;$('#digest').innerHTML=`<p style="margin:0 0 8px">${esc(G.headline)}</p>`+(G.items.length?'<table class="tl"><tr><th>원인</th><th class="n">사건</th><th class="n">절약 가능</th><th>대안</th></tr>'+G.items.map(d=>`<tr><td>${esc(d.label)}</td><td class="n">${d.events}</td><td class="n">≈ ${d.pp.toFixed(1)}%p</td><td>${esc(d.advice)}<div class="note">${esc(d.alternative)}</div></td></tr>`).join('')+'</table>':'');
 
@@ -253,8 +231,7 @@ const C=D.chunks,CO=C.overall;$('#chunks').innerHTML=`<p style="margin:0 0 8px">
 // shared header and links to the agent map (issue #4)
 const MB=D.map_base??'',H=D.header||{};
 const mapUrl=e=>`${MB}/?at=${e.end}&window=${Math.max(15,Math.ceil((e.end-e.start)/60000)+5)}`+(e.agents[0]?`&project=${encodeURIComponent(e.agents[0].project)}`:'');
-const lim=(k,x)=>x&&x.pct!=null?`${k} <b>${pc(x.pct)}</b>${x.basis==='estimated'?' (추정)':''}${x.reset?' · 초기화 '+hm(x.reset):''}`:'';
-$('#nav').innerHTML=`<b>사용량</b><a href="${MB}/">에이전트 지도</a>`+[lim('5시간',H.five_hour),lim('주간',H.seven_day)].filter(Boolean).map(s=>`<span>${s}</span>`).join('')+(H.warning?`<span class="warn">${esc(H.warning)}</span>`:'');
+$('#lim').innerHTML=shellLimits(H);$('#meta').textContent='LLM 호출 없음 · 로컬 전용';
 
 // events
 const tb=$('#events tbody');

@@ -30,7 +30,11 @@ Principles:
 
 ![moni_token dashboard](docs/img/dashboard.png)
 
-<sub>Screenshot from synthetic demo data (`scripts/demo_report.py`). The dashboard UI is currently in Korean.</sub>
+<sub>Screenshot from synthetic demo data (`scripts/demo_report.py`). The dashboard UI is currently in Korean.
+Dark theme: [docs/img/dashboard-dark.png](docs/img/dashboard-dark.png) — it follows the OS setting, or the ◐ button.</sub>
+
+Charts are drawn with [uPlot](https://github.com/leeoniya/uPlot), bundled in the repo: drag to zoom, double-click to
+reset, the cursor is shared between the 5-hour and weekly charts, and clicking a red spike band opens that spike.
 
 ## What it shows
 
@@ -160,10 +164,13 @@ uv run moni-token map          # http://127.0.0.1:4990/
 
 <sub>This repository's own map while this feature was being written: one session, files it edited in red.</sub>
 
-Shows where each agent (main session and subagents) is working right now, in three views of the project:
+Shows where each agent (main session and subagents) is working right now:
 
-- **Source tree**: the real directory tree. Files an agent read or edited in the period are bold (red when edited);
-  a ringed dot marks where each running agent is now.
+- **Agent timeline**: one row per agent over the selected period, one mark per tool call, coloured by kind
+  (read / edit / run / web / subagent / MCP). Click a mark to jump to its file in the tree.
+- **Source tree**: the real directory tree. Files an agent read or edited in the period are bold (red when edited),
+  a bar shows how often each file or folder was touched, and a ringed dot marks where each running agent is now.
+  Large folders are cut at 200 entries; touched files always show. A search box filters the tree.
 - **UI pages**: routes found from real files (Next.js `app/` and `pages/`, static `*.html`), highlighted when an agent
   touches their source.
 - **Features**: sections of a contract document (`docs/PLAN.md`, `PLAN.md`, `SPEC.md`, `docs/tasks/*.md`), linked to
@@ -245,3 +252,5 @@ Design notes are in `docs/adr/`. A test checks that the package never imports an
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Bundled third-party code: uPlot 1.6.32, MIT, © Leon Sorokin — `src/moni_token/vendor/uplot/LICENSE`.

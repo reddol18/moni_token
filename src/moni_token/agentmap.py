@@ -34,6 +34,15 @@ CONTRACT_GLOBS = ("docs/PLAN.md", "PLAN.md", "SPEC.md", "docs/SPEC.md", "docs/ta
 PAGE_EXT = (".tsx", ".jsx", ".ts", ".js", ".mdx")
 
 
+KINDS = (("edit", EDIT_TOOLS), ("read", {"Read", "Grep", "Glob", "NotebookRead", "LS"}),
+         ("run", {"Bash", "PowerShell", "BashOutput", "TaskOutput", "KillShell"}), ("web", {"WebFetch", "WebSearch"}),
+         ("agent", {"Agent", "Task", "Workflow", "SendMessage"}))
+
+
+def tool_kind(name: str | None) -> str:
+    return next((k for k, names in KINDS if name in names), "mcp" if (name or "").startswith("mcp__") else "other")
+
+
 def _join(root: str, rel: str) -> str:
     mod = ntpath if (":" in root[:3] or "\\" in root) else posixpath
     return mod.join(root, rel)
@@ -99,7 +108,7 @@ def agents(con: sqlite3.Connection, projects: Path, project_dir: str, root: str,
             a["status"] = "done" if m.get("finished") else ("running" if recent else "idle")
         else:         # a past moment (?at=) must not use today's "finished" flag
             a["status"] = "running" if recent else ("done" if m.get("finished") else "idle")
-        a["touches"], a["tool"], a["where"] = [], None, None
+        a["touches"], a["tool"], a["where"], a["lanes"] = [], None, None, []
     for sid, aid, ts, cwd, name, path in con.execute(
             "SELECT c.session_id, c.agent_id, c.ts_ms, c.cwd, t.name, t.path FROM call_tools t JOIN calls c "
             "USING(msg_id) WHERE c.project_dir=? AND c.ts_ms >= ? AND c.ts_ms <= ? ORDER BY c.ts_ms",
@@ -108,9 +117,10 @@ def agents(con: sqlite3.Connection, projects: Path, project_dir: str, root: str,
         if not a:
             continue
         a["tool"] = name
-        if path is None:
-            continue
-        p = path if (not cwd or cwd == root) else rel_path(_join(cwd, path), root)   # subfolder cwd -> project root
+        p = None
+        if path is not None:
+            p = path if (not cwd or cwd == root) else rel_path(_join(cwd, path), root)   # subfolder cwd -> project root
+        a["lanes"].append([ts, tool_kind(name), p])   # swimlane segment (issue #5)
         if p is None:
             continue
         a["touches"].append(dict(t=ts, path=p, edit=name in EDIT_TOOLS, tool=name))
@@ -279,6 +289,7 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
             t["page"] = pg["route"] if pg else None
             t["features"] = features_of(t["path"], feats)
         a["touches"] = a["touches"][-200:]
+        a["lanes"] = a["lanes"][-400:]
     state.update(agents=ags, tree=entries, pages=pgs, features=feats,
                  window=window_shares(con, now_ms, projs, ags, cur["project_dir"]))
     return state
