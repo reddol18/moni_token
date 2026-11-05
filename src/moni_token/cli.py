@@ -158,6 +158,10 @@ def main(argv: list[str] | None = None) -> int:
         t0, c0 = time.perf_counter(), time.process_time()
         collect_all(con, a.projects or config.claude_projects_dir())
         p = load_spike_params()
+        if not con.execute("SELECT 1 FROM events LIMIT 1").fetchone():
+            # a schema change rebuilt the DB: recreate past events silently before looking for new ones
+            for s in detect(con, first_call_ms(con), now_ms() - 2 * 3_600_000, p):
+                record_spike(con, s, now_ms())
         for s in check_and_notify(con, now_ms(), p):
             print(" / ".join(render(s)))
         write_live(config.live_path(), live_warning(con, now_ms(), p))   # read by the status line
@@ -231,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "backfill-events":
         p = load_spike_params()
         n = 0
-        for s in detect(con, day_ms(a.since) if a.since else 0, now_ms(), p):
+        for s in detect(con, day_ms(a.since) if a.since else first_call_ms(con), now_ms(), p):
             record_spike(con, s, now_ms())
             n += 1
         print(f"recorded {n} events")
@@ -251,6 +255,12 @@ def print_analysis(an) -> None:
         print(f"     해석: {c.interpretation}")
         print(f"     권고: {c.advice}")
     print(f"  * {an.note}")
+
+
+def first_call_ms(con) -> int:
+    """Start of the data: scanning from epoch 0 walks 56 years of empty 5-minute steps."""
+    (t,) = con.execute("SELECT MIN(ts_ms) FROM calls").fetchone()
+    return t or now_ms()
 
 
 def local_ms(s: str) -> int:

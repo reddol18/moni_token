@@ -18,6 +18,8 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
+from .blocks import compute_blocks
+from .calibrate import estimate
 from .parser import rel_path
 from .units import call_usd
 
@@ -259,9 +261,11 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
             "SELECT COUNT(DISTINCT agent_id) FROM calls WHERE project_dir=? AND agent_id IS NOT NULL AND ts_ms >= ? "
             "AND ts_ms <= ?", (p["project_dir"], now_ms - RUNNING_MS, now_ms)).fetchone()[0]
     first = max(projs, key=lambda p: (p["subagents_now"] > 0, p["last_ms"])) if projs else None
-    cur = next((p for p in projs if p["project_dir"] == project_dir), first)
+    # ?project= takes the log folder name or the display name (spike links from the usage page carry the name)
+    cur = next((p for p in projs if p["project_dir"] == project_dir), None) or \
+        next((p for p in projs if p["name"] == project_dir), first)
     state = dict(now=now_ms, window_min=window_min, projects=projs, project=cur, agents=[], tree=[], pages=[],
-                 features=[])
+                 features=[], window=None)
     if not cur:
         return state
     root = cur["root"]
@@ -275,5 +279,36 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
             t["page"] = pg["route"] if pg else None
             t["features"] = features_of(t["path"], feats)
         a["touches"] = a["touches"][-200:]
-    state.update(agents=ags, tree=entries, pages=pgs, features=feats)
+    state.update(agents=ags, tree=entries, pages=pgs, features=feats,
+                 window=window_shares(con, now_ms, projs, ags, cur["project_dir"]))
     return state
+
+
+def window_shares(con: sqlite3.Connection, now_ms: int, projs: list[dict], ags: list[dict], project_dir: str) -> dict | None:
+    """Usage so far in the 5-hour window containing now_ms, per project and per agent (issue #4).
+
+    Shares are of this PC's local log usage; ≈%p uses the 5-hour calibration and is an estimate."""
+    blk = next((b for b in compute_blocks(con, now_ms - 6 * 3_600_000) if b.start_ms <= now_ms < b.end_ms), None)
+    if not blk:
+        for a in ags:
+            a["win"] = None
+        return None
+    ratio = estimate(con, "five_hour")["usd_per_pct"]
+    per_proj: dict[str, float] = defaultdict(float)
+    per_agent: dict[tuple, float] = defaultdict(float)
+    for pd, sid, aid, model, inp, out, cr, c5, c1, web in con.execute(
+            "SELECT project_dir, session_id, agent_id, model, input, output, cache_read, cache_5m, cache_1h, "
+            "web_search_n FROM calls WHERE ts_ms >= ? AND ts_ms <= ?", (blk.start_ms, now_ms)):
+        u = call_usd(model, inp, out, cr, c5, c1, web)
+        per_proj[pd] += u
+        if pd == project_dir:
+            per_agent[(sid, aid)] += u
+    total = sum(per_proj.values())
+    pp = lambda u: round(u / ratio, 1) if ratio else None
+    for p in projs:
+        u = per_proj.get(p["project_dir"], 0.0)
+        p["win"] = dict(share=round(u / total, 3) if total else 0, pp=pp(u))
+    for a in ags:
+        u = per_agent.get((a["session_id"], a["agent"]), 0.0)
+        a["win"] = dict(share=round(u / total, 3) if total else 0, pp=pp(u))
+    return dict(start_ms=blk.start_ms, end_ms=blk.end_ms, source=blk.source, total_pp=pp(total), calibrated=bool(ratio))

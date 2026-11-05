@@ -153,6 +153,32 @@ def test_default_project_is_the_one_with_running_subagents(logs, con, tmp_path):
     assert agentmap.build_state(con, logs.root, now)["project"]["project_dir"] == "E--a"
 
 
+def test_window_shares_and_project_by_name(logs, con, project, tmp_path):
+    """Issue #4: per-agent / per-project share of the current 5-hour window; spike links pass the display name."""
+    now = int(time.time() * 1000)
+    r, other = str(project), str(tmp_path / "other")
+    logs.write(logs.path(session="s1"), _call("w1", iso(now - 600_000), r, []))
+    logs.write(logs.path(session="s1", agent="sub"), _call("w2", iso(now - 300_000), r, [], agent="sub"),
+               _call("w3", iso(now - 200_000), r, [], agent="sub"))
+    logs.write(logs.path(project="E--other", session="s9"), _call("w4", iso(now - 100_000), other, [], session="s9"))
+    collect(con, logs.root)
+    st = agentmap.build_state(con, logs.root, now, "shop")              # display name, not the log folder
+    assert st["project"]["project_dir"] == "E--proj" and st["window"]
+    shares = {a["agent"]: a["win"]["share"] for a in st["agents"]}
+    assert shares == {None: 0.25, "sub": 0.5}                            # 4 equal calls in the window
+    assert {p["name"]: p["win"]["share"] for p in st["projects"]} == {"shop": 0.75, "other": 0.25}
+
+
+def test_usage_page_links_spikes_to_the_map():
+    from moni_token.report import render
+    data = dict(generated=0, start=0, end=1, five_hour={}, seven_day={}, events=[], statusline=None,
+                digest=dict(headline="", items=[]), chunks=dict(overall=dict(chunks=0, token_share=0, cost_share=0),
+                                                                 agents=[], min_tokens=5000), header={})
+    served, static = render(data, map_base=""), render(data)
+    assert '"map_base": ""' in served and '"map_base": "http://127.0.0.1:4990"' in static
+    assert "그때 지도" in served and "?at=${e.end}" in served
+
+
 def test_server_is_loopback_only_and_checks_host(logs, tmp_path):
     assert mapserver.HOST == "127.0.0.1"
     srv = ThreadingHTTPServer((mapserver.HOST, 0), mapserver.make_handler(tmp_path / "m.db", logs.root))
@@ -169,7 +195,9 @@ def test_server_is_loopback_only_and_checks_host(logs, tmp_path):
         status, body = get("/")
         assert status == 200 and b"http://" not in body.replace(b"http://127.0.0.1", b"")   # no external resources
         status, body = get("/api/state")
-        assert status == 200 and json.loads(body)["agents"] == []
+        assert status == 200 and json.loads(body)["agents"] == [] and "header" in json.loads(body)
+        status, body = get("/usage")
+        assert status == 200 and "한도 사용률".encode() in body and b"cdn" not in body.lower()
         assert get("/", host="evil.example:80")[0] == 403
     finally:
         srv.shutdown()

@@ -77,3 +77,18 @@ def test_all_commands_work_offline(no_network, logs, tmp_path, capsys, monkeypat
         assert main(["--db", str(db), "--projects", str(logs.root), *cmd]) == 0, cmd
     out = capsys.readouterr().out
     assert SECRET not in out and "cache_write" in out
+
+
+def test_check_recreates_past_events_after_a_rebuild(logs, tmp_path, monkeypatch):
+    """2026-11-05: schema 7 rebuilt the DB and the usage page lost every past spike."""
+    from moni_token import alerts
+    from moni_token.cli import main
+    from moni_token.db import connect
+    sent = []
+    monkeypatch.setattr(alerts, "desktop_notify", lambda t, b: sent.append(t) or True)
+    monkeypatch.setenv("MONI_TOKEN_HOME", str(tmp_path))
+    logs.write(logs.path(), logs.human("2026-10-06T03:31:00.000Z"),
+               logs.assistant("m1", "2026-10-06T03:31:01.000Z", tools=["Read"], c1=600_000))   # an old spike
+    db = tmp_path / "x.db"
+    assert main(["--db", str(db), "--projects", str(logs.root), "check"]) == 0
+    assert connect(db).execute("SELECT COUNT(*) FROM events").fetchone()[0] >= 1 and sent == []

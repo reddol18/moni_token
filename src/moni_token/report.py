@@ -69,6 +69,22 @@ def report_events(con: sqlite3.Connection, since_ms: int, with_calls: bool = Fal
     return events
 
 
+MAP_BASE = "http://127.0.0.1:4990"   # where spike rows link to; "" when the page is served by the map server
+
+
+def header(con: sqlite3.Connection, now_ms: int, live: bool = True) -> dict:
+    """Shared top line of the usage page and the agent map (issue #4): limit % now and the live spike warning."""
+    from .statusline import warning
+    out = {}
+    for kind in ("five_hour", "seven_day"):
+        s = series(con, kind, now_ms - 600_000, now_ms)
+        cur, basis = pct_at(s, now_ms)
+        win = next((w for w in s["windows"] if w[0] <= now_ms < w[1]), None)
+        out[kind] = dict(pct=cur, basis=basis, reset=win[1] if win else None)
+    out["warning"] = warning(now_ms) if live else ""
+    return out
+
+
 def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7) -> dict:
     start = now_ms - days * DAY
     fh = _pack(series(con, "five_hour", start, now_ms), now_ms)
@@ -81,11 +97,12 @@ def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7) -> dict:
         seen = json.loads((config.data_dir() / "statusline.seen").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         seen = None
-    return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen, digest=dg, chunks=ch)
+    return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen,
+                digest=dg, chunks=ch, header=header(con, now_ms))
 
 
-def render(data: dict) -> str:
-    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+def render(data: dict, map_base: str = MAP_BASE) -> str:
+    payload = json.dumps(dict(data, map_base=map_base), ensure_ascii=False).replace("</", "<\\/")
     return TEMPLATE.replace("/*DATA*/null", payload)
 
 
@@ -142,7 +159,10 @@ details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.t
 .share{display:flex;height:14px;border-radius:4px;overflow:hidden;margin:6px 0 8px;gap:2px}.share i{display:block;height:100%}
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
 .badge{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);color:var(--text-secondary)}
+nav.top{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;font-size:13px}
+nav.top a{color:var(--line)}nav.top b{color:var(--text-primary)}.warn{color:var(--critical);font-weight:600}
 </style></head><body><main>
+<nav class="top" id="nav"></nav>
 <h1>Claude 한도 사용률 · 급상승 원인</h1>
 <p class="sub" id="gen"></p>
 <div class="tiles" id="tiles"></div>
@@ -157,7 +177,7 @@ details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.t
 <div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정</span>
 <span id="cal7"></span></div><div class="chart" id="c7"></div></div>
 <h2>급상승 사건</h2>
-<div class="card scroll"><table id="events"><thead><tr><th>시각</th><th>상승</th><th>주 원인</th><th class="n">절약 가능</th><th>에이전트 점유율</th></tr></thead><tbody></tbody></table>
+<div class="card scroll"><table id="events"><thead><tr><th>시각</th><th>상승</th><th>주 원인</th><th class="n">절약 가능</th><th>에이전트 점유율</th><th>지도</th></tr></thead><tbody></tbody></table>
 <p class="note">행을 누르면 에이전트(프로젝트)별 점유율, 원인 근거, 그 구간의 호출 타임라인이 열립니다. 점유율은 구간 안 로컬 로그 사용량(토큰 종류별 가중) 기준이며 해석은 규칙에 따른 추정입니다.</p></div>
 </main>
 <script id="data" type="application/json">/*DATA*/null</script>
@@ -230,13 +250,20 @@ const C=D.chunks,CO=C.overall;$('#chunks').innerHTML=`<p style="margin:0 0 8px">
  '<table class="tl"><tr><th>에이전트</th><th class="n">호출</th><th class="n">덩어리</th><th class="n">100호출당</th><th class="n">중앙값(토큰)</th><th class="n">토큰 비중</th><th class="n">비용 비중</th><th>주된 출처</th></tr>'+
  C.agents.filter(g=>g.chunks).map(g=>`<tr><td><span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)}</td><td class="n">${g.calls}</td><td class="n">${g.chunks}</td><td class="n">${g.per_100_calls}</td><td class="n">${g.median_chunk.toLocaleString()}</td><td class="n">${(g.token_share*100).toFixed(1)}%</td><td class="n">${(g.cost_share*100).toFixed(1)}%</td><td>${g.categories.slice(0,3).map(c=>esc(c.category)+' '+c.chunks+'건').join(', ')}</td></tr>`).join('')+'</table><p class="note">크기는 받은 호출의 컨텍스트 증가분으로 잰 실측 토큰. 끌고 다닌 양 = 크기 × (1 + 같은 대화에서 이후 호출 수, compact 전까지). 비용 비중은 캐시 쓰기 1.25~2배·읽기 0.1배 가중.</p>';
 
+// shared header and links to the agent map (issue #4)
+const MB=D.map_base??'',H=D.header||{};
+const mapUrl=e=>`${MB}/?at=${e.end}&window=${Math.max(15,Math.ceil((e.end-e.start)/60000)+5)}`+(e.agents[0]?`&project=${encodeURIComponent(e.agents[0].project)}`:'');
+const lim=(k,x)=>x&&x.pct!=null?`${k} <b>${pc(x.pct)}</b>${x.basis==='estimated'?' (추정)':''}${x.reset?' · 초기화 '+hm(x.reset):''}`:'';
+$('#nav').innerHTML=`<b>사용량</b><a href="${MB}/">에이전트 지도</a>`+[lim('5시간',H.five_hour),lim('주간',H.seven_day)].filter(Boolean).map(s=>`<span>${s}</span>`).join('')+(H.warning?`<span class="warn">${esc(H.warning)}</span>`:'');
+
 // events
 const tb=$('#events tbody');
 const shareBar=a=>`<div class="share">${a.map(g=>`<i title="${esc(g.project)} ${Math.round(g.share*100)}%" style="width:${g.share*100}%;background:${colorOf(g.project)}"></i>`).join('')}</div>`;
 for(const e of [...D.events].reverse()){
  const rise=e.kind==='pct'?`<b>+${e.rise}%p</b> ${pc(e.frm)}→${pc(e.to)}${e.basis==='estimated'?' <span class="badge">추정</span>':''}`:e.kind==='cache_write'?'캐시 재기록':e.kind==='rate'?'사용량 급증':'지정 구간';
  const top=e.agents.slice(0,3).map(g=>`<span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)} ${Math.round(g.share*100)}%`).join(' &nbsp;');
- const tr=el('tr',{class:'ev',tabindex:'0','data-id':e.id},`<td>${fmt(e.start)}~${hm(e.end)}</td><td>${rise}</td><td>${esc(e.causes[0]?.label||'규칙에 맞는 원인 없음')}</td><td class="n">${e.save_pp!=null&&e.save_pp>=0.05?'≈ '+e.save_pp.toFixed(1)+'%p':'—'}</td><td>${top}</td>`);
+ const tr=el('tr',{class:'ev',tabindex:'0','data-id':e.id},`<td>${fmt(e.start)}~${hm(e.end)}</td><td>${rise}</td><td>${esc(e.causes[0]?.label||'규칙에 맞는 원인 없음')}</td><td class="n">${e.save_pp!=null&&e.save_pp>=0.05?'≈ '+e.save_pp.toFixed(1)+'%p':'—'}</td><td>${top}</td><td><a class="maplink" href="${mapUrl(e)}">그때 지도</a></td>`);
+ tr.querySelector('.maplink').onclick=ev=>ev.stopPropagation();
  tr.onclick=()=>openEvent(e.id);tr.onkeydown=k=>{if(k.key==='Enter')openEvent(e.id)};tb.append(tr)}
 function openEvent(id,scroll){
  const tr=tb.querySelector(`tr[data-id="${id}"]`);if(!tr)return;const nx=tr.nextElementSibling;
@@ -252,7 +279,7 @@ function openEvent(id,scroll){
   <td class="n">${c.w?c.w.toLocaleString():''}</td><td class="n">${c.o.toLocaleString()}</td>
   <td>${c.tr==='human'?'사람 입력':c.tr==='tool_result'?'도구 결과'+(c.rb>=100000?` ${Math.round(c.rb/1024)}KB`:'')+(c.img?' 이미지':''):''}</td><td>${esc(c.tools.join(', '))}</td></tr>`).join('')+'</table></div></details>';
  h+=`<p class="note">${esc(e.note||'')}</p>`;
- const d=el('tr',{class:'detail'},`<td colspan="5">${h}</td>`);tr.after(d);if(scroll)tr.scrollIntoView({behavior:'smooth',block:'center'})}
+ const d=el('tr',{class:'detail'},`<td colspan="6">${h}</td>`);tr.after(d);if(scroll)tr.scrollIntoView({behavior:'smooth',block:'center'})}
 draw();addEventListener('resize',()=>{clearTimeout(window._r);window._r=setTimeout(draw,120)});
 const hid=/^#event-(\d+)$/.exec(location.hash);if(hid)openEvent(+hid[1],true);
 </script></body></html>"""

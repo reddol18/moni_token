@@ -169,6 +169,11 @@ Shows where each agent (main session and subagents) is working right now, in thr
 - **Features**: sections of a contract document (`docs/PLAN.md`, `PLAN.md`, `SPEC.md`, `docs/tasks/*.md`), linked to
   files only through paths or unique file names written in backticks in that section; `- [x]` items give progress.
 
+The same server also serves the usage page at **http://127.0.0.1:4990/usage**, built from live data. Both pages share
+a top line with the current 5-hour and weekly limit % and the live spike warning. Every spike on the usage page has a
+**"그때 지도" (map at that time)** link that opens the map at the spike's end, on its top project; on the map, each agent and
+project shows its share of the current 5-hour window (≈ %p via calibration, labelled as an estimate).
+
 Add `?at=<epoch ms>` to the URL to look at a past moment (the tree is today's). The server listens on 127.0.0.1 only
 and collects new log lines every 5 seconds. From the logs it keeps only tool names and project-relative target paths
 (ADR-0004); subagent task descriptions are not shown.

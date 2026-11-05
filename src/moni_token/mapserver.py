@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from .agentmap import build_state
 from .collector import collect
 from .db import connect
+from .report import build_data, header, render
 
 HOST = "127.0.0.1"
 
@@ -37,13 +38,22 @@ def make_handler(db: Path, projects: Path):
             u = urlparse(self.path)
             if u.path == "/":
                 return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            if u.path == "/usage":   # the usage report, from live data (issue #4)
+                con = connect(db)
+                try:
+                    html = render(build_data(con, int(time.time() * 1000)), map_base="")
+                finally:
+                    con.close()
+                return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
             if u.path == "/api/state":
                 q = parse_qs(u.query)
                 con = connect(db)
                 try:
                     at = int((q.get("at") or [0])[0])   # ?at=<epoch ms>: look back
-                    st = build_state(con, projects, at or int(time.time() * 1000), (q.get("project") or [None])[0],
+                    now = at or int(time.time() * 1000)
+                    st = build_state(con, projects, now, (q.get("project") or [None])[0],
                                      int((q.get("window") or ["30"])[0]), live=not at)
+                    st["header"] = header(con, now, live=not at)
                 finally:
                     con.close()
                 return self._send(200, json.dumps(st, ensure_ascii=False).encode("utf-8"),
@@ -107,9 +117,10 @@ details>summary{cursor:pointer;list-style:none}details>summary::before{content:"
 details[open]>summary::before{content:"▾ "}.scroll{max-height:72vh;overflow:auto}
 .pg,.ft{padding:4px 0;border-bottom:1px solid var(--grid)}.pg.on,.ft.on{background:var(--grid);border-radius:4px}
 .bar{height:5px;background:var(--grid);border-radius:3px;overflow:hidden;margin:3px 0}.bar i{display:block;height:100%;background:var(--hl)}
-.empty{color:var(--muted)}
+.empty{color:var(--muted)}nav a{color:var(--hl)}nav b{color:var(--text)}.warn{color:var(--edit);font-weight:600}
+nav{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 </style></head><body>
-<header><h1>에이전트 지도</h1><select id="proj" aria-label="프로젝트"></select>
+<header><h1>에이전트 지도</h1><nav id="nav" class="sub"></nav><select id="proj" aria-label="프로젝트"></select>
 <select id="win" aria-label="기간"><option value="15">15분</option><option value="30" selected>30분</option>
 <option value="120">2시간</option></select><span class="sub" id="meta"></span></header>
 <main>
@@ -124,10 +135,15 @@ const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>(
 const PAL=['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(--s6)','var(--s7)'];
 const ST={running:'실행 중',idle:'멈춤',done:'완료'};let open=new Set();
 const U=new URLSearchParams(location.search),AT=U.get('at');let proj=U.get('project');
+if(U.get('window')){const w=U.get('window'),s=$('#win');if(![...s.options].some(o=>o.value===w))s.add(new Option(w+'분',w));s.value=w}
 async function tick(){
  const q=new URLSearchParams({window:$('#win').value});if(proj)q.set('project',proj);if(AT)q.set('at',AT);
  let D;try{D=await (await fetch('/api/state?'+q)).json()}catch(e){$('#meta').textContent='서버 연결 끊김';return}
- const sel=$('#proj');sel.innerHTML=D.projects.map(p=>`<option value="${esc(p.project_dir)}">${esc(p.name)}</option>`).join('')||'<option>최근 활동 없음</option>';
+ const H=D.header||{},pcv=v=>v==null?'—':(v<10?v.toFixed(1):Math.round(v))+'%',hm=ms=>new Date(ms).toTimeString().slice(0,5);
+ const lim=(k,x)=>x&&x.pct!=null?`<span>${k} <b>${pcv(x.pct)}</b>${x.basis==='estimated'?' (추정)':''}${x.reset?' · 초기화 '+hm(x.reset):''}</span>`:'';
+ $('#nav').innerHTML=`<a href="/usage">사용량</a>`+lim('5시간',H.five_hour)+lim('주간',H.seven_day)+(H.warning?`<span class="warn">${esc(H.warning)}</span>`:'');
+ const wsh=w=>w&&w.share?` · 이번 5시간 구간의 ${Math.round(w.share*100)}%${w.pp!=null?` (≈${w.pp}%p 추정)`:''}`:'';
+ const sel=$('#proj');sel.innerHTML=D.projects.map(p=>`<option value="${esc(p.project_dir)}">${esc(p.name)}${p.win&&p.win.share?` · ${Math.round(p.win.share*100)}%`:''}</option>`).join('')||'<option>최근 활동 없음</option>';
  if(D.project){proj=D.project.project_dir;sel.value=proj}
  $('#meta').textContent=(AT?`과거 시점 ${new Date(D.now).toLocaleString()} 기준`:`갱신 ${new Date(D.now).toLocaleTimeString()}`)+' · LLM 호출 없음 · 로컬 전용';
  const col={};D.agents.forEach((a,i)=>col[a.key]=i<PAL.length?PAL[i]:'var(--muted)');
@@ -135,7 +151,7 @@ async function tick(){
  // agents
  $('#agents').innerHTML=D.agents.map(a=>{const t=a.touches.at(-1);
   return `<div class="ag"><div><span class="sw" style="background:${col[a.key]}"></span><b>${esc(a.type)}</b> <span class="badge ${a.status==='running'?'run':a.status==='done'?'done':''}">${ST[a.status]}</span> <span class="k">${esc(a.session)}${a.agent?' · '+esc(a.agent.slice(0,8)):''}</span></div>
-  ${a.desc?`<div>${esc(a.desc)}</div>`:''}<div class="k">${a.calls}회 호출 · ${(a.tokens/1000).toFixed(0)}k 토큰 · 마지막 ${ago(a.last_ms)}${a.tool?' · '+esc(a.tool):''}</div>
+  ${a.desc?`<div>${esc(a.desc)}</div>`:''}<div class="k">${a.calls}회 호출 · ${(a.tokens/1000).toFixed(0)}k 토큰 · 마지막 ${ago(a.last_ms)}${a.tool?' · '+esc(a.tool):''}${wsh(a.win)}</div>
   ${t?`<div class="path">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">페이지 ${esc(t.page)}</div>`:''}${t.features.length?`<div class="k">기능 ${t.features.map(i=>esc(D.features[i].title)).join(', ')}</div>`:''}`:'<div class="k">아직 파일을 다루지 않음</div>'}</div>`}).join('')||'<p class="empty">이 기간에 활동한 에이전트가 없습니다.</p>';
  // touched paths -> agents
  const hit={},now={},ed={};
