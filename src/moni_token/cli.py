@@ -90,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("install-task", help="register `check` with Windows Task Scheduler (runs on battery by default)")
     p.add_argument("--interval", type=int, default=2, help="minutes")
     p.add_argument("--no-battery", action="store_true", help="don't run while on battery")
-    sub.add_parser("uninstall-task", help="remove the scheduled task")
+    p.add_argument("--map", action="store_true", help="also start the agent map server at logon")
+    p.add_argument("--map-port", type=int, default=4990)
+    sub.add_parser("uninstall-task", help="remove the scheduled tasks (check and map)")
     p = sub.add_parser("map", help="live agent map on http://127.0.0.1:<port>/ (source tree, UI pages, features)")
     p.add_argument("--port", type=int, default=4990)
     p.add_argument("--interval", type=float, default=5.0, help="seconds between log collections")
@@ -103,7 +105,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd in ("install-task", "uninstall-task"):
         from .task import main_install, main_uninstall
-        return main_install(a.interval, not a.no_battery) if a.cmd == "install-task" else main_uninstall()
+        if a.cmd == "install-task":
+            return main_install(a.interval, not a.no_battery, a.map_port if a.map else None)
+        return main_uninstall()
     if a.cmd == "statusline":   # hot path: no database
         from .statusline import main as sl_main
         return sl_main(["--wrap", a.wrap] if a.wrap else [])

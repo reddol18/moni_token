@@ -18,6 +18,20 @@ def test_no_battery_keeps_task_scheduler_restriction():
     assert "-Minutes 5)" in s
 
 
+def test_map_task_starts_at_logon_and_keeps_running():
+    s = task.map_script(Path("pythonw.exe"), port=5000)
+    assert "-AtLogOn" in s and "-m moni_token.cli map --port 5000" in s
+    assert "[TimeSpan]::Zero" in s and "-RestartCount 3" in s      # no time limit, restarted on crash
+    assert "Start-ScheduledTask" in s and "-Force" in s
+    assert "-AllowStartIfOnBatteries" in s
+    assert "Batter" not in task.map_script(Path("pythonw.exe"), battery=False)
+
+
+def test_uninstall_removes_both_tasks():
+    s = task.uninstall_script()
+    assert "'moni_token check'" in s and "'moni_token map'" in s
+
+
 def test_quotes_are_escaped():
     assert task._ps_quote("a'b") == "'a''b'"
 

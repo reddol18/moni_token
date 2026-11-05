@@ -94,7 +94,8 @@ Windows 작업 스케줄러에 등록하세요.
 ```powershell
 uv run moni-token install-task                 # 2분마다, 배터리 사용 중에도 실행
 uv run moni-token install-task --no-battery    # 배터리 사용 중에는 쉼
-uv run moni-token uninstall-task               # 해제
+uv run moni-token install-task --map           # 에이전트 지도 서버도 로그인할 때(그리고 지금) 시작
+uv run moni-token uninstall-task               # 둘 다 해제
 ```
 
 로그인해 있는 동안만 돕니다. `install-task`를 다시 실행하면 기존 작업을 바꾸므로, 배터리 옵션은 언제든 전환할 수 있습니다.

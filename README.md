@@ -96,7 +96,8 @@ about a second. On Windows, register it with Task Scheduler:
 ```powershell
 uv run moni-token install-task                 # every 2 minutes, also on battery
 uv run moni-token install-task --no-battery    # pause while on battery
-uv run moni-token uninstall-task               # remove it
+uv run moni-token install-task --map           # also start the agent map server at logon (and now)
+uv run moni-token uninstall-task               # remove both
 ```
 
 It runs only while you are logged on. Running `install-task` again replaces the task, so you can switch the battery
