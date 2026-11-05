@@ -115,7 +115,7 @@ details>summary{cursor:pointer;list-style:none}details>summary::before{content:"
 details[open]>summary::before{content:"▾ "}.scroll{max-height:64vh;overflow:auto}
 .pg,.ft{padding:4px 6px;border-bottom:1px solid var(--grid)}.pg.on,.ft.on{background:var(--surface-2);border-radius:4px}
 .meter{height:4px;background:var(--grid);border-radius:2px;overflow:hidden;margin:3px 0}.meter i{display:block;height:100%;background:var(--line)}
-.empty{color:var(--muted)}
+.empty{color:var(--muted)}.cost{margin-left:8px;color:var(--text-secondary);font-size:11px;font-family:var(--mono)}
 #lanes svg{display:block;width:100%}#lanes text{fill:var(--text-secondary);font-size:11px}
 #lanes .lbl{fill:var(--text-primary);font-size:12px}#lanes rect.seg{cursor:pointer}
 .lg{display:flex;gap:12px;flex-wrap:wrap;color:var(--text-secondary);font-size:12px}.lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
@@ -137,7 +137,7 @@ PAGE = r"""/*HEAD*/<body>/*SHELL*/
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const PAL=['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(--s6)','var(--s7)'];
 const KIND={read:['읽기','var(--s1)'],edit:['수정','var(--critical)'],run:['실행','var(--s4)'],web:['웹','var(--s7)'],agent:['하위 에이전트','var(--s3)'],mcp:['MCP','var(--s5)'],other:['기타','var(--muted)']};
-const ST={running:'실행 중',idle:'멈춤',done:'완료'};let open=new Set(),focusPath=null,D=null;
+const ST={running:'실행 중',idle:'멈춤',done:'완료'},tk=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?Math.round(n/1e3)+'k':String(n);let open=new Set(),focusPath=null,D=null;
 const U=new URLSearchParams(location.search),AT=U.get('at');let proj=U.get('project');
 if(U.get('window')){const w=U.get('window'),s=$('#win');if(![...s.options].some(o=>o.value===w))s.add(new Option(w+'분',w));s.value=w}
 $('#lg').innerHTML=Object.values(KIND).map(([n,c])=>`<span><i style="background:${c}"></i>${n}</span>`).join('');
@@ -157,7 +157,7 @@ function draw(){if(!D)return;
  $('#agents').innerHTML=D.agents.map(a=>{const t=a.touches.at(-1);
   return `<div class="ag"><div><span class="sw" style="background:${col[a.key]}"></span><b>${esc(a.type)}</b> <span class="badge ${a.status==='running'?'run':a.status==='done'?'done':''}">${ST[a.status]}</span> <span class="k mono">${esc(a.session)}${a.agent?' · '+esc(a.agent.slice(0,8)):''}</span></div>
   ${a.desc?`<div>${esc(a.desc)}</div>`:''}<div class="k">${a.calls}회 호출 · ${(a.tokens/1000).toFixed(0)}k 토큰 · 마지막 ${ago(a.last_ms)}${a.tool?' · '+esc(a.tool):''}${wsh(a.win)}</div>
-  ${t?`<div class="path mono">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">페이지 ${esc(t.page)}</div>`:''}${t.features.length?`<div class="k">기능 ${t.features.map(i=>esc(D.features[i].title)).join(', ')}</div>`:''}`:'<div class="k">아직 파일을 다루지 않음</div>'}</div>`}).join('')||'<p class="empty">이 기간에 활동한 에이전트가 없습니다.</p>';
+  ${t?`<div class="path mono">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">페이지 ${esc(t.page)}</div>`:''}${t.features.length?`<div class="k">기능 ${t.features.map(i=>esc(D.features[i].title)).join(', ')}</div>`:''}`:'<div class="k">아직 파일을 다루지 않음</div>'}${a.top_file&&a.top_file.carried>=1000?`<div class="k">가장 무거운 파일 <span class="mono">${esc(a.top_file.path)}</span> · 끌고 다닌 양 ${tk(a.top_file.carried)}</div>`:''}</div>`}).join('')||'<p class="empty">이 기간에 활동한 에이전트가 없습니다.</p>';
  tree(col);pagesFeats(col)}
 function lanes(col){
  const box=$('#lanes'),W=box.clientWidth||900,L=230,R=10,rh=22,ags=D.agents.filter(a=>a.lanes.length);
@@ -181,12 +181,17 @@ function tree(col){
  const kids={};for(const e of D.tree){const i=e.path.lastIndexOf('/'),par=i<0?'':e.path.slice(0,i);(kids[par]??=[]).push(e)}
  const dots=p=>{const ks=[...(hit[p]||[])];return ks.length?`<span class="dots">${ks.map(k=>`<i class="${now[p]?.has(k)?'now':''}" style="background:${col[k]}"></i>`).join('')}</span>`:''};
  const heat=p=>cnt[p]?`<span class="heat" style="width:${Math.max(4,Math.round(cnt[p]/mx*60))}px" title="${cnt[p]}회"></span>`:'';
+ // issue #6: tokens each file added to the context, and how much re-reading it carried
+ const C=D.costs||{},fold={};for(const p in C){const s=p.split('/');for(let i=1;i<s.length;i++){const k=s.slice(0,i).join('/');fold[k]=(fold[k]||0)+C[p].carried}}
+ const cost=(p,dir)=>{if(dir)return fold[p]?`<span class="cost" title="이 폴더 파일들이 끌고 다닌 토큰">${tk(fold[p])}</span>`:'';
+  const c=C[p];if(!c)return '';const t=`읽은 결과 ${c.tokens.toLocaleString()}토큰, 이후 최대 ${c.later}회 다시 읽힘 → 끌고 다닌 양 ${c.carried.toLocaleString()}토큰${c.pp!=null?` (≈${c.pp}%p 추정)`:''}`;
+  return `<span class="cost" title="${t}">${tk(c.tokens)}${c.later?` ×${c.later} → ${tk(c.carried)}`:''}${c.pp!=null&&c.pp>=0.05?` ≈${c.pp}%p`:''}</span>`};
  const render=par=>`<ul class="tree${par?'':' root'}">`+(kids[par]||[]).filter(e=>!q||e.more?!q:match.has(e.path)).map(e=>{
   if(e.more)return `<li class="k">… 외 ${e.more}개</li>`;
   const nm=esc(e.path.split('/').pop()),cls=(cnt[e.path]?'hot ':'')+(ed[e.path]?'ed ':'')+(focusPath===e.path?'focus':'');
-  if(!e.dir)return `<li class="f ${cls}" data-path="${esc(e.path)}">${nm}${heat(e.path)}${dots(e.path)}</li>`;
+  if(!e.dir)return `<li class="f ${cls}" data-path="${esc(e.path)}">${nm}${heat(e.path)}${dots(e.path)}${cost(e.path,false)}</li>`;
   const o=(q&&match.has(e.path))||cnt[e.path]||open.has(e.path);
-  return `<li><details data-p="${esc(e.path)}"${o?' open':''}><summary class="f ${cls}" data-path="${esc(e.path)}">${nm}/${heat(e.path)}${dots(e.path)}</summary>${o?render(e.path):''}</details></li>`}).join('')+'</ul>';
+  return `<li><details data-p="${esc(e.path)}"${o?' open':''}><summary class="f ${cls}" data-path="${esc(e.path)}">${nm}/${heat(e.path)}${dots(e.path)}${cost(e.path,true)}</summary>${o?render(e.path):''}</details></li>`}).join('')+'</ul>';
  $('#tree').innerHTML=D.tree.length?render(''):'<p class="empty">프로젝트 폴더를 읽을 수 없습니다.</p>';
  $('#tree').querySelectorAll('details').forEach(d=>d.ontoggle=()=>{const was=open.has(d.dataset.p);d.open?open.add(d.dataset.p):open.delete(d.dataset.p);if(d.open&&!was&&!d.querySelector('ul'))tree(col)})}
 function pagesFeats(col){

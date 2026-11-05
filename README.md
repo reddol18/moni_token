@@ -171,6 +171,10 @@ Shows where each agent (main session and subagents) is working right now:
 - **Source tree**: the real directory tree. Files an agent read or edited in the period are bold (red when edited),
   a bar shows how often each file or folder was touched, and a ringed dot marks where each running agent is now.
   Large folders are cut at 200 entries; touched files always show. A search box filters the tree.
+  Next to each touched file: **what it cost in tokens**, e.g. `9k ×65 → 352k` — its tool result added 9k tokens to
+  the context and was re-read by 65 later calls, so the conversation carried 352k tokens of it (≈ %p of the 5-hour
+  limit when calibrated). Folders show the sum; each agent shows its heaviest file. Same measurement as
+  `moni-token chunks`.
 - **UI pages**: routes found from real files (Next.js `app/` and `pages/`, static `*.html`), highlighted when an agent
   touches their source.
 - **Features**: sections of a contract document (`docs/PLAN.md`, `PLAN.md`, `SPEC.md`, `docs/tasks/*.md`), linked to

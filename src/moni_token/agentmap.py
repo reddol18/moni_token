@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .blocks import compute_blocks
 from .calibrate import estimate
+from .chunks import measure_results
 from .parser import rel_path
 from .units import call_usd
 
@@ -275,7 +276,7 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
     cur = next((p for p in projs if p["project_dir"] == project_dir), None) or \
         next((p for p in projs if p["name"] == project_dir), first)
     state = dict(now=now_ms, window_min=window_min, projects=projs, project=cur, agents=[], tree=[], pages=[],
-                 features=[], window=None)
+                 features=[], window=None, costs={})
     if not cur:
         return state
     root = cur["root"]
@@ -290,9 +291,46 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
             t["features"] = features_of(t["path"], feats)
         a["touches"] = a["touches"][-200:]
         a["lanes"] = a["lanes"][-400:]
-    state.update(agents=ags, tree=entries, pages=pgs, features=feats,
+    costs = file_costs(con, cur["project_dir"], root, since, now_ms, ags)
+    state.update(agents=ags, tree=entries, pages=pgs, features=feats, costs=costs,
                  window=window_shares(con, now_ms, projs, ags, cur["project_dir"]))
     return state
+
+
+def file_costs(con: sqlite3.Connection, project_dir: str, root: str, since_ms: int, now_ms: int,
+               ags: list[dict]) -> dict[str, dict]:
+    """Issue #6: per touched file, the tokens its tool results added and how often later calls re-read them.
+
+    Same measurement as `moni-token chunks` (chunks.measure_results); ≈%p uses the 5-hour calibration."""
+    paths = {}
+    for tid, cwd, path in con.execute(
+            "SELECT t.tool_use_id, c.cwd, t.path FROM call_tools t JOIN calls c USING(msg_id) "
+            "WHERE c.project_dir=? AND c.ts_ms >= ? AND c.ts_ms <= ? AND t.path IS NOT NULL",
+            (project_dir, since_ms, now_ms)):
+        p = path if (not cwd or cwd == root) else rel_path(_join(cwd, path), root)
+        if p:
+            paths[tid] = p
+    ratio = estimate(con, "five_hour")["usd_per_pct"]
+    out: dict[str, dict] = {}
+    per_agent: dict[tuple, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for m in measure_results(con, since_ms, now_ms + 1, project_dir):
+        p = paths.get(m.tool_use_id)
+        if not p or m.tokens <= 0:
+            continue
+        c = out.setdefault(p, dict(tokens=0, carried=0, reads=0, later=0, usd=0.0))
+        c["tokens"] += m.tokens
+        c["carried"] += m.carried
+        c["reads"] += 1
+        c["later"] = max(c["later"], m.later)
+        c["usd"] += m.usd
+        per_agent[(m.session_id, m.agent_id)][p] += m.carried
+    for c in out.values():
+        c["pp"] = round(c.pop("usd") / ratio, 2) if ratio else None
+    for a in ags:
+        files = per_agent.get((a["session_id"] or "", a["agent"] or ""), {})
+        top = max(files.items(), key=lambda kv: kv[1], default=None)
+        a["top_file"] = dict(path=top[0], carried=top[1]) if top else None
+    return out
 
 
 def window_shares(con: sqlite3.Connection, now_ms: int, projs: list[dict], ags: list[dict], project_dir: str) -> dict | None:

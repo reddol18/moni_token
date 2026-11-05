@@ -179,6 +179,30 @@ def test_usage_page_links_spikes_to_the_map():
     assert "그때 지도" in served and "?at=${e.end}" in served
 
 
+def test_file_costs_match_chunks(logs, con, project):
+    """Issue #6: a file's size and carried tokens on the map equal the `chunks` measurement."""
+    from moni_token.chunks import analyze_chunks
+    now = int(time.time() * 1000)
+    r = str(project)
+
+    def call(mid, t, cr, tools=()):
+        d = _call(mid, iso(t), r, tools)
+        d["message"]["usage"].update(cache_read_input_tokens=cr, output_tokens=100)
+        return d
+    p = logs.path(session="s1")
+    logs.write(p, call("c1", now - 400_000, 10_000, [("Read", {"file_path": r + "/src/lib/price.py"})]),
+               logs.tool_result(iso(now - 399_000), "x" * 80_000, tool_use_id="tc10"),
+               call("c2", now - 300_000, 40_100),                       # growth 40,100 - 10,000 - 100 = 30,000
+               call("c3", now - 200_000, 40_300), call("c4", now - 100_000, 40_500))
+    collect(con, logs.root)
+    st = agentmap.build_state(con, logs.root, now)
+    c = st["costs"]["src/lib/price.py"]
+    assert c["tokens"] == 30_000 and c["later"] == 2 and c["carried"] == 90_000 and c["reads"] == 1
+    ch = analyze_chunks(con, now - 30 * 60_000, now + 1, min_tokens=1)
+    assert ch["agents"][0]["carried_tokens"] == c["carried"]
+    assert st["agents"][0]["top_file"] == dict(path="src/lib/price.py", carried=90_000)
+
+
 def test_served_pages_are_self_contained():
     """Issue #5: shared shell on both pages, uPlot inlined from the vendored copy with its licence, no remote loads."""
     import re

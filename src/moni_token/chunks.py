@@ -58,33 +58,51 @@ class AgentChunks:
                              cost_share=round(v[2] / self.total_usd, 4) if self.total_usd else 0.0) for c, v in cats])
 
 
-def analyze_chunks(con: sqlite3.Connection, start_ms: int, end_ms: int, min_tokens: int = 5_000) -> dict:
+@dataclass
+class Result:
+    """One tool result entering the context: measured size, and how often it was read again afterwards."""
+    tool_use_id: str
+    name: str | None
+    project: str
+    project_dir: str
+    session_id: str
+    agent_id: str
+    ts_ms: int
+    tokens: int          # context growth of the consuming call, split by result bytes
+    later: int           # later calls in the same context before a compaction (inside the period)
+    usd: float           # write once + read `later` times, at the consuming call's model price
+
+    @property
+    def carried(self) -> int:
+        return self.tokens * (1 + self.later)
+
+
+def measure_results(con: sqlite3.Connection, start_ms: int, end_ms: int, project_dir: str | None = None,
+                    calls_sink: list | None = None):
+    """Yield a Result per tool result consumed in [start_ms, end_ms). Shared by `chunks` and the agent map (#6)."""
     mul = table()["multipliers"]
+    where, args = "ts_ms >= ? AND ts_ms < ?", [start_ms, end_ms]
+    if project_dir is not None:
+        where, args = where + " AND project_dir = ?", args + [project_dir]
     calls = con.execute(
         "SELECT msg_id, ts_ms, COALESCE(session_id,''), COALESCE(agent_id,''), COALESCE(project, project_dir), model, "
-        "input, output, cache_read, cache_5m, cache_1h, web_search_n FROM calls WHERE ts_ms >= ? AND ts_ms < ? "
-        "ORDER BY ts_ms", (start_ms, end_ms)).fetchall()
+        f"input, output, cache_read, cache_5m, cache_1h, web_search_n, project_dir FROM calls WHERE {where} "
+        "ORDER BY ts_ms", args).fetchall()
+    if calls_sink is not None:
+        calls_sink.extend(calls)
     results: dict[str, list] = defaultdict(list)
     for tid, mid, size, img, name in con.execute(
             "SELECT r.tool_use_id, r.msg_id, r.bytes, r.image, t.name FROM tool_results r "
             "LEFT JOIN call_tools t ON t.tool_use_id = r.tool_use_id "
-            "JOIN calls c ON c.msg_id = r.msg_id WHERE c.ts_ms >= ? AND c.ts_ms < ?", (start_ms, end_ms)):
-        results[mid].append((size, img, name))
+            f"JOIN calls c ON c.msg_id = r.msg_id WHERE c.{where.replace(' AND ', ' AND c.')}", args):
+        results[mid].append((tid, size, name))
     compacts: dict[tuple, list] = defaultdict(list)
     for sid, aid, ts in con.execute("SELECT COALESCE(session_id,''), COALESCE(agent_id,''), ts_ms FROM compactions "
                                     "ORDER BY ts_ms"):
         compacts[(sid, aid)].append(ts)
-
     contexts: dict[tuple, list] = defaultdict(list)
-    agents: dict[str, AgentChunks] = {}
     for c in calls:
-        mid, ts, sid, aid, proj, model, inp, out, cr, c5, c1, ws = c
-        contexts[(sid, aid)].append(c)
-        a = agents.setdefault(proj, AgentChunks(proj))
-        a.calls += 1
-        a.total_tokens += inp + cr + c5 + c1 + out
-        a.total_usd += call_usd(model, inp, out, cr, c5, c1, ws)
-
+        contexts[(c[2], c[3])].append(c)
     for key, rows in contexts.items():
         cuts = compacts.get(key, [])
         times = [r[1] for r in rows]
@@ -96,27 +114,44 @@ def analyze_chunks(con: sqlite3.Connection, start_ms: int, end_ms: int, min_toke
             growth = (r[6] + r[8] + r[9] + r[10]) - (prev[6] + prev[8] + prev[9] + prev[10]) - prev[7]
             if growth <= 0:
                 continue           # the context shrank (compaction) or was rebuilt: size unknown
-            total_bytes = sum(s for s, _, _ in res) or 1
-            nxt_cut = cuts[bisect.bisect_right(cuts, r[1])] if bisect.bisect_right(cuts, r[1]) < len(cuts) else None
-            end_idx = bisect.bisect_left(times, nxt_cut) if nxt_cut else len(rows)
+            total_bytes = sum(s for _, s, _ in res) or 1
+            i = bisect.bisect_right(cuts, r[1])
+            end_idx = bisect.bisect_left(times, cuts[i]) if i < len(cuts) else len(rows)
             later = max(0, end_idx - k - 1)
             pin = price_for(r[5]).input / 1e6
             wm = mul["cache_write_1h"] if r[10] >= r[9] else mul["cache_write_5m"]
-            a = agents[r[4]]
-            for size, img, name in res:
+            for tid, size, name in res:
                 tok = int(growth * size / total_bytes)
-                if tok < min_tokens:
-                    continue
-                carried = tok * (1 + later)
-                usd = tok * pin * wm + tok * later * pin * mul["cache_read"]
-                a.chunks += 1
-                a.chunk_sizes.append(tok)
-                a.carried_tokens += carried
-                a.carried_usd += usd
-                cat = a.by_category[category(name)]
-                cat[0] += 1
-                cat[1] += carried
-                cat[2] += usd
+                yield Result(tid, name, r[4], r[12], r[2], r[3], r[1], tok, later,
+                             tok * pin * wm + tok * later * pin * mul["cache_read"])
+
+
+def analyze_chunks(con: sqlite3.Connection, start_ms: int, end_ms: int, min_tokens: int = 5_000) -> dict:
+    calls: list = []
+    measured = list(measure_results(con, start_ms, end_ms, calls_sink=calls))
+    agents: dict[str, AgentChunks] = {}
+    for c in calls:
+        mid, ts, sid, aid, proj, model, inp, out, cr, c5, c1, ws, _ = c
+        a = agents.setdefault(proj, AgentChunks(proj))
+        a.calls += 1
+        a.total_tokens += inp + cr + c5 + c1 + out
+        a.total_usd += call_usd(model, inp, out, cr, c5, c1, ws)
+    for m in measured:
+        if m.tokens < min_tokens:
+            continue
+        a = agents[m.project]
+        a.chunks += 1
+        a.chunk_sizes.append(m.tokens)
+        a.carried_tokens += m.carried
+        a.carried_usd += m.usd
+        cat = a.by_category[category(m.name)]
+        cat[0] += 1
+        cat[1] += m.carried
+        cat[2] += m.usd
+    return _summary(agents, start_ms, end_ms, min_tokens)
+
+
+def _summary(agents: dict, start_ms: int, end_ms: int, min_tokens: int) -> dict:
     rows = sorted((a.as_dict() for a in agents.values()), key=lambda d: -d["carried_tokens"])
     tot_t = sum(a.total_tokens for a in agents.values())
     tot_u = sum(a.total_usd for a in agents.values())
