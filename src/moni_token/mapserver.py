@@ -9,19 +9,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import accpage, accuracy
 from .agentmap import build_state
 from .collector import collect
 from .calibrate import estimate
 from .db import connect
-from .forecast import remaining_usage
+from .forecast import backtest_cases, remaining_usage
 from .report import build_data, header, render
 from .ui import head, shell_html
 
 HOST = "127.0.0.1"
+RECORD_S = 20
 
 
 def page() -> str:
     return PAGE.replace("/*HEAD*/", head("moni_token 에이전트 지도", MAP_CSS)).replace("/*SHELL*/", shell_html("map"))
+
+
+_bt_cache: dict = {}
+
+
+def _backtest(con) -> list[dict]:
+    """The replay only changes when another subagent finishes: keep it until then."""
+    key = con.execute("SELECT COUNT(*), MAX(mtime) FROM agent_meta WHERE finished = 1").fetchone()
+    if _bt_cache.get("key") != key:
+        _bt_cache.update(key=key, cases=backtest_cases(con))
+    return _bt_cache["cases"]
 
 
 def make_handler(db: Path, projects: Path):
@@ -52,6 +65,15 @@ def make_handler(db: Path, projects: Path):
                 finally:
                     con.close()
                 return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            if u.path == "/accuracy":   # issue #9
+                con = connect(db)
+                try:
+                    now = int(time.time() * 1000)
+                    data = accuracy.build(con, now, _backtest(con))
+                    data["header"] = header(con, now)
+                finally:
+                    con.close()
+                return self._send(200, accpage.render(data).encode("utf-8"), "text/html; charset=utf-8")
             if u.path == "/api/state":
                 q = parse_qs(u.query)
                 con = connect(db)
@@ -77,9 +99,13 @@ def serve(db: Path, projects: Path, port: int = 4990, interval_s: float = 5.0) -
 
     def collector():
         con = connect(db)
+        last_rec = 0.0
         while not stop.is_set():
             try:
                 collect(con, projects)
+                if time.time() - last_rec >= RECORD_S:   # issue #9: keep the live forecasts for scoring
+                    accuracy.record_live(con, int(time.time() * 1000))
+                    last_rec = time.time()
             except Exception:   # a locked or half-written file must not stop the map
                 pass
             stop.wait(interval_s)

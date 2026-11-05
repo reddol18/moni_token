@@ -141,13 +141,31 @@ CREATE TABLE IF NOT EXISTS checklist_snaps (
     total INTEGER NOT NULL,
     PRIMARY KEY (root, doc, ts_ms)
 );
+-- issue #9: the forecasts the map showed live, one per call count reached, scored once the run finishes (numbers only)
+CREATE TABLE IF NOT EXISTS forecast_snaps (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    project_dir TEXT NOT NULL,
+    agent_type TEXT,
+    ts_ms INTEGER NOT NULL,
+    calls INTEGER NOT NULL,
+    elapsed_ms INTEGER NOT NULL,
+    calls_p50 INTEGER NOT NULL,
+    calls_p85 INTEGER NOT NULL,
+    remain_ms_p50 INTEGER NOT NULL,
+    remain_ms_p85 INTEGER NOT NULL,
+    n INTEGER NOT NULL,
+    scope TEXT,
+    PRIMARY KEY (session_id, agent_id, calls)
+);
 """
 
 
 SCHEMA_VERSION = 7
 # user input cannot be rebuilt from the logs: kept across schema rebuilds
 PRESERVE = {"calib_manual": "1=1", "limit_obs": "source IN ('usage', 'manual')",
-            "checklist_snaps": "1=1"}   # snapshots are history: the logs cannot rebuild them
+            "checklist_snaps": "1=1",   # snapshots are history: the logs cannot rebuild them
+            "forecast_snaps": "1=1"}
 
 
 def connect(path: Path | str) -> sqlite3.Connection:

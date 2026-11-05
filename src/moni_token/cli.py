@@ -15,6 +15,7 @@ from .chunks import analyze_chunks
 from .collector import collect
 from .db import connect
 from .events import list_events, record, record_spike
+from .accuracy import record_live
 from .forecast import backtest, snapshot_checklists
 from .report import report_events, write_report
 from .summary import digest
@@ -170,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         roots = [r for (r,) in con.execute("SELECT DISTINCT cwd FROM calls WHERE agent_id IS NULL AND cwd IS NOT NULL "
                                            "AND ts_ms >= ?", (now_ms() - 7 * 86_400_000,))]
         snapshot_checklists(con, roots, now_ms())   # ADR-0005: checklist history for the progress forecast
+        record_live(con, now_ms())                  # issue #9: live forecasts, scored later on /accuracy
         write_report(con, config.data_dir() / "report.html")
         with open(config.data_dir() / "runs.jsonl", "a", encoding="utf-8") as f:   # M5: resident cost
             f.write(json.dumps(dict(ts_ms=now_ms(), wall_ms=round((time.perf_counter() - t0) * 1000),

@@ -118,6 +118,11 @@ def forecast_checklist(con: sqlite3.Connection, root: str, doc: str, now_ms: int
     """P50/P85 time to finish the remaining items, from the intervals between past completions."""
     snaps = con.execute("SELECT ts_ms, done, total FROM checklist_snaps WHERE root=? AND doc=? ORDER BY ts_ms",
                         (root, doc)).fetchall()
+    return checklist_from(snaps, now_ms)
+
+
+def checklist_from(snaps: list[tuple], now_ms: int) -> dict:
+    """forecast_checklist over a given snapshot history (also used to replay it, issue #9)."""
     if not snaps:
         return dict(ok=False, steps=0)
     gaps, prev = [], None
@@ -139,15 +144,11 @@ def forecast_checklist(con: sqlite3.Connection, root: str, doc: str, now_ms: int
 CHECKPOINTS = (1, 2, 4, 8, 16, 32, 64, 128)
 
 
-def backtest(con: sqlite3.Connection) -> dict:
-    """Replay the live situation: at fixed call counts (1, 2, 4, …) every run that got that far is forecast from runs
-    that ended before it started; count how often its real total landed within P50 / P85.
-
-    (Checkpoints as a share of each run's own length would leak the answer: a run checked at half its calls always
-    ends at twice the checkpoint.)"""
+def backtest_cases(con: sqlite3.Connection) -> list[dict]:
+    """Every replayed forecast: the run, the checkpoint, the P50/P85 it would have shown and the real total."""
     types = [t for (t,) in con.execute("SELECT DISTINCT agent_type FROM agent_meta WHERE finished=1 AND agent_type IS NOT NULL")]
-    hits = defaultdict(lambda: [0, 0, 0])   # cases, total <= P85, total <= P50
-    for t in types:   # all projects pooled
+    out = []
+    for t in sorted(types):   # all projects pooled
         allruns = sorted(runs(con, t, None), key=lambda r: r["last"])
         for r in allruns:
             earlier = [x for x in allruns if x["last"] < r["first"]][-RECENT_RUNS:]
@@ -157,10 +158,24 @@ def backtest(con: sqlite3.Connection) -> dict:
                 f = forecast_from(earlier, c, 0, 0.0)
                 if not f["ok"]:
                     continue
-                h = hits[t]
-                h[0] += 1
-                h[1] += r["calls"] <= f["calls_p85"]
-                h[2] += r["calls"] <= f["calls_p50"]
+                out.append(dict(session_id=r["key"][0], agent_id=r["key"][1], agent_type=t, ts_ms=r["first"],
+                                end_ms=r["last"], calls=c, calls_p50=f["calls_p50"], calls_p85=f["calls_p85"],
+                                n=f["n"], actual=r["calls"]))
+    return out
+
+
+def backtest(con: sqlite3.Connection) -> dict:
+    """Replay the live situation: at fixed call counts (1, 2, 4, …) every run that got that far is forecast from runs
+    that ended before it started; count how often its real total landed within P50 / P85.
+
+    (Checkpoints as a share of each run's own length would leak the answer: a run checked at half its calls always
+    ends at twice the checkpoint.)"""
+    hits = defaultdict(lambda: [0, 0, 0])   # cases, total <= P85, total <= P50
+    for k in backtest_cases(con):
+        h = hits[k["agent_type"]]
+        h[0] += 1
+        h[1] += k["actual"] <= k["calls_p85"]
+        h[2] += k["actual"] <= k["calls_p50"]
     total = sum(v[0] for v in hits.values())
     inside = sum(v[1] for v in hits.values())
     half = sum(v[2] for v in hits.values())

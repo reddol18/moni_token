@@ -59,7 +59,7 @@ def shell_html(current: str, base: str = "") -> str:
     """Top bar: brand, the two pages, limit strip (filled by JS), meta, theme toggle."""
     tab = lambda key, href, label: f'<a href="{href}"{" aria-current=page" if key == current else ""}>{label}</a>'
     return (f'<header class="shell"><span class="brand">moni_token</span><nav>{tab("map", base + "/", "에이전트 지도")}'
-            f'{tab("usage", base + "/usage", "사용량")}</nav><span class="lim" id="lim"></span><span class="sp"></span>'
+            f'{tab("usage", base + "/usage", "사용량")}{tab("accuracy", base + "/accuracy", "예측 정확도")}</nav><span class="lim" id="lim"></span><span class="sp"></span>'
             f'<span class="meta" id="meta"></span><button type="button" onclick="toggleTheme()" '
             f'aria-label="테마 전환">◐ 테마</button></header>')
 

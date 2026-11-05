@@ -193,6 +193,23 @@ a top line with the current 5-hour and weekly limit % and the live spike warning
 **"그때 지도" (map at that time)** link that opens the map at the spike's end, on its top project; on the map, each agent and
 project shows its share of the current 5-hour window (≈ %p via calibration, labelled as an estimate).
 
+**Is this usage normal?**
+- Both limit charts on the usage page draw a baseline behind the current line:
+  - the usual curve: the P50, with a P25–P75 band, of every earlier window at the same point into the window;
+  - last week's line.
+- A label next to each chart title gives the verdict with its numbers, for example: "▲ high · 20% now · usually 5.9% at day 2 (P25–P75 0–14%) · 10 past windows". Below 5 past windows it says "not enough history".
+- A pace line shows the % you would reach at the reset if the last hour's slope (the last day's for the weekly chart) continues, and when 100% would come first.
+
+**Forecast accuracy** at **http://127.0.0.1:4990/accuracy**:
+- **Live record:** the map server (every 20 s) and `check` store the forecast shown for each running subagent, once per call count. Only numbers are stored, in a `forecast_snaps` table. Each forecast is scored once the run finishes.
+- **What the page shows:**
+  - the P50 and P85 hit rates (targets about 50% and 85%);
+  - the median error;
+  - a verdict: well calibrated, too wide or too narrow;
+  - these numbers per agent type, per session (small charts of the P50/P85 given at each call count against the real total) and as a weekly trend.
+- **Backtest tab:** the same views for the replay that `moni-token forecast` runs.
+- **Closed sessions:** runs whose session closed before they finished count as "unresolved", not as misses.
+
 Add `?at=<epoch ms>` to the URL to look at a past moment (the tree is today's). The server listens on 127.0.0.1 only
 and collects new log lines every 5 seconds. From the logs it keeps only tool names and project-relative target paths
 (ADR-0004); subagent task descriptions are not shown.
