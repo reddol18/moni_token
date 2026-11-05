@@ -75,8 +75,8 @@ def test_state_maps_agents_to_tree_pages_and_features(logs, con, project):
     sub = logs.path(session="s1", agent="abc")
     logs.write(sub, _call("m2", iso(now - 30_000), r, [("Edit", {"file_path": r + "/app/(store)/cart/CartList.tsx"})],
                           agent="abc"))
-    sub.with_name("agent-abc.meta.json").write_text(json.dumps({"agentType": "Explore", "description": SECRET}),
-                                                    encoding="utf-8")
+    sub.with_name("agent-abc.meta.json").write_text(
+        json.dumps({"agentType": "Explore", "description": "Find cart bugs " + "x" * 200}), encoding="utf-8")
     collect(con, logs.root)
     st = agentmap.build_state(con, logs.root, now)
     assert st["project"]["root"] == r
@@ -94,7 +94,12 @@ def test_state_maps_agents_to_tree_pages_and_features(logs, con, project):
     assert t["edit"] and t["page"] == "/cart" and [st["features"][i]["title"] for i in t["features"]] == ["Checkout"]
     main = next(a for a in st["agents"] if a["agent"] is None)
     assert main["type"] == "main" and main["status"] == "idle"
-    assert SECRET not in json.dumps(st, ensure_ascii=False)                               # meta description not read
+    assert sa["desc"].startswith("Find cart bugs") and len(sa["desc"]) == agentmap.DESC_MAX   # shown, cut
+    assert main["desc"] is None
+    assert SECRET not in json.dumps(st, ensure_ascii=False)
+    dump = "\n".join(str(r) for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                     for r in con.execute(f'SELECT * FROM "{t}"'))
+    assert "Find cart bugs" not in dump                                                    # never stored
 
 
 def test_past_moment_ignores_later_calls(logs, con, project):
@@ -105,6 +110,47 @@ def test_past_moment_ignores_later_calls(logs, con, project):
     collect(con, logs.root)
     a = agentmap.build_state(con, logs.root, t0 + 30_000)["agents"]
     assert len(a) == 1 and a[0]["calls"] == 1 and a[0]["status"] == "running" and a[0]["where"] == "README.md"
+
+
+def test_huge_folder_does_not_hide_the_rest_and_touched_paths_always_show(tmp_path, monkeypatch):
+    """fund_agent 2026-11-05: output/ held 3,277 files and the 4,000-entry tree cut src/ off."""
+    monkeypatch.setattr(agentmap, "PER_DIR", 50)
+    monkeypatch.setattr(agentmap, "MAX_ENTRIES", 120)
+    root = tmp_path / "p"
+    (root / "output").mkdir(parents=True)
+    for i in range(500):
+        (root / "output" / f"r{i:03}.json").write_text("x", encoding="utf-8")
+    (root / "src/deep/er").mkdir(parents=True)
+    (root / "src/deep/er/x.py").write_text("x", encoding="utf-8")
+    (root / "zz").mkdir()
+    entries = agentmap.tree(root, {"output/r499.json", "src/deep/er/x.py"})
+    paths = [e["path"] for e in entries]
+    assert "src" in paths and "zz" in paths                        # top level complete
+    assert sum(p.startswith("output/r") for p in paths) <= 51      # 50 + the touched one
+    assert any(e.get("more") == 450 for e in entries)              # "… 외 450개"
+    assert "output/r499.json" in paths and "src/deep/er/x.py" in paths and "src/deep/er" in paths
+
+
+def test_live_view_trusts_finished_flag(logs, con, project):
+    now = int(time.time() * 1000)
+    r = str(project)
+    sub = logs.path(session="s1", agent="fin")
+    logs.write(sub, _call("m9", iso(now - 20_000), r, [("Read", {"file_path": r + "/README.md"})], agent="fin"))
+    sub.with_name("agent-fin.meta.json").write_text(json.dumps({"agentType": "Explore", "finished": True}),
+                                                    encoding="utf-8")
+    collect(con, logs.root)
+    status = lambda live: next(a for a in agentmap.build_state(con, logs.root, now, live=live)["agents"]
+                               if a["agent"] == "fin")["status"]
+    assert status(True) == "done" and status(False) == "running"
+
+
+def test_default_project_is_the_one_with_running_subagents(logs, con, tmp_path):
+    now = int(time.time() * 1000)
+    a, b = str(tmp_path / "a"), str(tmp_path / "b")
+    logs.write(logs.path(project="E--a", session="sa"), _call("x1", iso(now - 60_000), a, [], session="sa", agent="k1"))
+    logs.write(logs.path(project="E--b", session="sb"), _call("x2", iso(now - 5_000), b, [], session="sb"))
+    collect(con, logs.root)
+    assert agentmap.build_state(con, logs.root, now)["project"]["project_dir"] == "E--a"
 
 
 def test_server_is_loopback_only_and_checks_host(logs, tmp_path):

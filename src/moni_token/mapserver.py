@@ -41,9 +41,9 @@ def make_handler(db: Path, projects: Path):
                 q = parse_qs(u.query)
                 con = connect(db)
                 try:
-                    at = int((q.get("at") or [0])[0]) or int(time.time() * 1000)   # ?at=<epoch ms>: look back
-                    st = build_state(con, projects, at, (q.get("project") or [None])[0],
-                                     int((q.get("window") or ["30"])[0]))
+                    at = int((q.get("at") or [0])[0])   # ?at=<epoch ms>: look back
+                    st = build_state(con, projects, at or int(time.time() * 1000), (q.get("project") or [None])[0],
+                                     int((q.get("window") or ["30"])[0]), live=not at)
                 finally:
                     con.close()
                 return self._send(200, json.dumps(st, ensure_ascii=False).encode("utf-8"),
@@ -135,7 +135,7 @@ async function tick(){
  // agents
  $('#agents').innerHTML=D.agents.map(a=>{const t=a.touches.at(-1);
   return `<div class="ag"><div><span class="sw" style="background:${col[a.key]}"></span><b>${esc(a.type)}</b> <span class="badge ${a.status==='running'?'run':a.status==='done'?'done':''}">${ST[a.status]}</span> <span class="k">${esc(a.session)}${a.agent?' · '+esc(a.agent.slice(0,8)):''}</span></div>
-  <div class="k">${a.calls}회 호출 · ${(a.tokens/1000).toFixed(0)}k 토큰 · 마지막 ${ago(a.last_ms)}${a.tool?' · '+esc(a.tool):''}</div>
+  ${a.desc?`<div>${esc(a.desc)}</div>`:''}<div class="k">${a.calls}회 호출 · ${(a.tokens/1000).toFixed(0)}k 토큰 · 마지막 ${ago(a.last_ms)}${a.tool?' · '+esc(a.tool):''}</div>
   ${t?`<div class="path">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">페이지 ${esc(t.page)}</div>`:''}${t.features.length?`<div class="k">기능 ${t.features.map(i=>esc(D.features[i].title)).join(', ')}</div>`:''}`:'<div class="k">아직 파일을 다루지 않음</div>'}</div>`}).join('')||'<p class="empty">이 기간에 활동한 에이전트가 없습니다.</p>';
  // touched paths -> agents
  const hit={},now={},ed={};
@@ -146,6 +146,7 @@ async function tick(){
  const kids={};for(const e of D.tree){const i=e.path.lastIndexOf('/'),par=i<0?'':e.path.slice(0,i);(kids[par]??=[]).push(e)}
  const dots=p=>{const ks=[...(hit[p]||[])];return ks.length?`<span class="dots">${ks.map(k=>`<i class="${now[p]?.has(k)?'now':''}" style="background:${col[k]}"></i>`).join('')}</span>`:''};
  const render=par=>`<ul class="tree${par?'':' root'}">`+(kids[par]||[]).map(e=>{const nm=esc(e.path.split('/').pop()),cls=(hot.has(e.path)?'hot ':'')+(ed[e.path]?'ed':'');
+  if(e.more)return `<li class="k">… 외 ${e.more}개</li>`;
   if(!e.dir)return `<li class="f ${cls}">${nm}${dots(e.path)}</li>`;
   const o=hot.has(e.path)||open.has(e.path);return `<li><details data-p="${esc(e.path)}"${o?' open':''}><summary class="f ${cls}">${nm}/${dots(e.path)}</summary>${o?render(e.path):''}</details></li>`}).join('')+'</ul>';
  $('#tree').innerHTML=D.tree.length?render(''):'<p class="empty">프로젝트 폴더를 읽을 수 없습니다.</p>';

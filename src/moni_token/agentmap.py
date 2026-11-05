@@ -24,7 +24,9 @@ from .units import call_usd
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", "dist", "build", ".next",
              ".turbo", ".cache", "coverage", ".idea", ".vscode", ".mypy_cache", ".ruff_cache", "target"}
 MAX_ENTRIES = 4000
+PER_DIR = 200
 RUNNING_MS = 2 * 60_000
+DESC_MAX = 80
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 CONTRACT_GLOBS = ("docs/PLAN.md", "PLAN.md", "SPEC.md", "docs/SPEC.md", "docs/tasks/*.md")
 PAGE_EXT = (".tsx", ".jsx", ".ts", ".js", ".mdx")
@@ -49,7 +51,10 @@ def project_root(con: sqlite3.Connection, project_dir: str) -> str | None:
 
 
 def _meta(projects: Path, project_dir: str, session_id: str) -> dict[str, dict]:
-    """agentType / finished / parent from each subagent's .meta.json. The free-text description is not read."""
+    """agentType / finished / parent / description from each subagent's .meta.json.
+
+    The description (the short task title the parent gave) is shown on the live page only and never stored
+    (ADR-0004 addendum); it is cut to DESC_MAX characters."""
     out = {}
     base = projects / project_dir / (session_id or "") / "subagents"
     if session_id and base.is_dir():
@@ -59,12 +64,15 @@ def _meta(projects: Path, project_dir: str, session_id: str) -> dict[str, dict]:
             except (OSError, ValueError):
                 continue
             aid = m.name[len("agent-"):-len(".meta.json")]
+            desc = d.get("description")
             out[aid] = dict(type=str(d.get("agentType") or ""), finished=bool(d.get("finished")),
-                            parent=d.get("parentAgentId"), depth=d.get("spawnDepth"))
+                            parent=d.get("parentAgentId"), depth=d.get("spawnDepth"),
+                            desc=str(desc)[:DESC_MAX] if isinstance(desc, str) else None)
     return out
 
 
-def agents(con: sqlite3.Connection, projects: Path, project_dir: str, root: str, since_ms: int, now_ms: int) -> list[dict]:
+def agents(con: sqlite3.Connection, projects: Path, project_dir: str, root: str, since_ms: int, now_ms: int,
+           live: bool = True) -> list[dict]:
     per: dict[tuple, dict] = {}
     for sid, aid, ts, cwd, model, inp, out, cr, c5, c1, web in con.execute(
             "SELECT session_id, agent_id, ts_ms, cwd, model, input, output, cache_read, cache_5m, cache_1h, "
@@ -83,8 +91,12 @@ def agents(con: sqlite3.Connection, projects: Path, project_dir: str, root: str,
         m = metas.get(aid or "", {})
         a["type"] = "main" if aid is None else (m.get("type") or "subagent")
         a["parent"] = m.get("parent")
-        # recent calls first: viewing a past moment (?at=) must not show today's "finished" flag
-        a["status"] = "running" if now_ms - a["last_ms"] < RUNNING_MS else ("done" if m.get("finished") else "idle")
+        a["desc"] = m.get("desc")
+        recent = now_ms - a["last_ms"] < RUNNING_MS
+        if live:      # the meta file says it finished: trust it right away
+            a["status"] = "done" if m.get("finished") else ("running" if recent else "idle")
+        else:         # a past moment (?at=) must not use today's "finished" flag
+            a["status"] = "running" if recent else ("done" if m.get("finished") else "idle")
         a["touches"], a["tool"], a["where"] = [], None, None
     for sid, aid, ts, cwd, name, path in con.execute(
             "SELECT c.session_id, c.agent_id, c.ts_ms, c.cwd, t.name, t.path FROM call_tools t JOIN calls c "
@@ -108,22 +120,49 @@ def agents(con: sqlite3.Connection, projects: Path, project_dir: str, root: str,
     return out
 
 
-def tree(root: Path) -> list[dict]:
-    """Directory entries (names only) under root, breadth-limited by MAX_ENTRIES."""
+def tree(root: Path, must: set[str] = frozenset()) -> list[dict]:
+    """Directory entries (names only) under root.
+
+    Each folder lists at most PER_DIR entries (the rest becomes one `more` entry), the whole tree at most MAX_ENTRIES,
+    so one huge output folder cannot crowd out the rest. Paths in `must` (what agents touched) are always included.
+    """
     out: list[dict] = []
     if not root.is_dir():
         return out
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and (not d.startswith(".") or d == ".github")
-                             and not (Path(dirpath, d, ".git").exists()))   # a nested repository is another project
-        rel = Path(dirpath).relative_to(root).as_posix()
-        rel = "" if rel == "." else rel
-        for d in dirnames:
-            out.append(dict(path=f"{rel}/{d}" if rel else d, dir=True))
-        for f in sorted(filenames):
-            out.append(dict(path=f"{rel}/{f}" if rel else f, dir=False))
-        if len(out) >= MAX_ENTRIES:
-            return out[:MAX_ENTRIES]
+    seen: set[str] = set()
+
+    def add(path: str, is_dir: bool) -> None:
+        if path not in seen:
+            seen.add(path)
+            out.append(dict(path=path, dir=is_dir))
+
+    queue = [""]   # breadth-first: every top-level folder shows before any deep one
+    while queue and len(out) < MAX_ENTRIES:
+        rel = queue.pop(0)
+        try:
+            items = sorted(os.scandir(root / rel), key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower()))
+        except OSError:
+            continue
+        shown = 0
+        for e in items:
+            is_dir = e.is_dir(follow_symlinks=False)
+            if is_dir and (e.name in SKIP_DIRS or (e.name.startswith(".") and e.name != ".github")
+                           or Path(e.path, ".git").exists()):   # a nested repository is another project
+                continue
+            p = f"{rel}/{e.name}" if rel else e.name
+            if shown >= PER_DIR or len(out) >= MAX_ENTRIES:
+                out.append(dict(path=f"{rel}/…" if rel else "…", dir=False, more=len(items) - shown))
+                break
+            add(p, is_dir)
+            shown += 1
+            if is_dir:
+                queue.append(p)
+    for p in sorted(must):   # touched paths and their folders, even past the limits
+        parts = p.split("/")
+        for i in range(1, len(parts)):
+            add("/".join(parts[:i]), True)
+        if p:
+            add(p, (root / p).is_dir())
     return out
 
 
@@ -211,17 +250,23 @@ def features_of(path: str, feats: list[dict]) -> list[int]:
 
 
 def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_dir: str | None = None,
-                window_min: int = 30) -> dict:
+                window_min: int = 30, live: bool = True) -> dict:
+    """`live` is False when looking at a past moment (?at=)."""
     since = now_ms - window_min * 60_000
     projs = active_projects(con, since, now_ms)
-    cur = next((p for p in projs if p["project_dir"] == project_dir), projs[0] if projs else None)
+    for p in projs:   # default: the project with subagents active right now, then the most recent one
+        p["subagents_now"] = con.execute(
+            "SELECT COUNT(DISTINCT agent_id) FROM calls WHERE project_dir=? AND agent_id IS NOT NULL AND ts_ms >= ? "
+            "AND ts_ms <= ?", (p["project_dir"], now_ms - RUNNING_MS, now_ms)).fetchone()[0]
+    first = max(projs, key=lambda p: (p["subagents_now"] > 0, p["last_ms"])) if projs else None
+    cur = next((p for p in projs if p["project_dir"] == project_dir), first)
     state = dict(now=now_ms, window_min=window_min, projects=projs, project=cur, agents=[], tree=[], pages=[],
                  features=[])
     if not cur:
         return state
     root = cur["root"]
-    ags = agents(con, projects, cur["project_dir"], root, since, now_ms) if root else []
-    entries = tree(Path(root)) if root else []
+    ags = agents(con, projects, cur["project_dir"], root, since, now_ms, live) if root else []
+    entries = tree(Path(root), {t["path"] for a in ags for t in a["touches"]}) if root else []
     pgs = pages(entries)
     feats = features(Path(root), entries) if root else []
     for a in ags:
