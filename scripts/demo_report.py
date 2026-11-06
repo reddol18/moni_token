@@ -131,6 +131,22 @@ def scenario() -> list[Session]:
         ss.append(s)
     e = Session("web-app", "e5f6a7b8-0001"); e.work(d0 + timedelta(days=2, hours=16, minutes=10), 30, 80); ss.append(e)
     f = Session("docs-site", "f6a7b8c9-0001"); f.work(d0 + timedelta(days=2, hours=12, minutes=0), 35, 90); ss.append(f)
+    return history(d0) + ss
+
+
+def history(d0: datetime, days: int = 42) -> list[Session]:
+    """Six earlier weeks of ordinary work, so the charts have a usual curve and a last week to compare with."""
+    ss = []
+    for k in range(days, 0, -1):
+        day = d0 - timedelta(days=k)
+        if day.weekday() >= 5 and rnd.random() < 0.7:     # mostly quiet weekends
+            continue
+        for j in range(rnd.choice((1, 1, 2))):
+            proj = rnd.choice(("web-app", "docs-site", "data-pipeline"))
+            s = Session(proj, f"h{k:02d}{j}-0000", ctx=rnd.randint(40_000, 80_000))
+            s.work(day + timedelta(hours=9 + j * 5, minutes=rnd.randint(0, 50)), rnd.randint(40, 90), rnd.randint(40, 80),
+                   big_every=rnd.choice((0, 6, 8)), big_tokens=rnd.randint(8_000, 16_000))
+            ss.append(s)
     return ss
 
 

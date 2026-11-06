@@ -162,7 +162,10 @@ uv run moni-token map          # http://127.0.0.1:4990/
 
 ![Live agent map](docs/img/agent-map.png)
 
-<sub>This repository's own map while this feature was being written: one session, files it edited in red.</sub>
+<sub>This repository's own map during development:
+- a running subagent (general-purpose) with its progress forecast;
+- the main agent marked "progress forecast: not supported for main";
+- edited files in red, each touched file with its token cost.</sub>
 
 Shows where each agent (main session and subagents) is working right now:
 
@@ -199,6 +202,10 @@ project shows its share of the current 5-hour window (≈ %p via calibration, la
   - last week's line.
 - A label next to each chart title gives the verdict with its numbers, for example: "▲ high · 20% now · usually 5.9% at day 2 (P25–P75 0–14%) · 10 past windows". Below 5 past windows it says "not enough history".
 - A pace line shows the % you would reach at the reset if the last hour's slope (the last day's for the weekly chart) continues, and when 100% would come first.
+
+The main agent gets no forecast: in the recommended setup it only directs and reviews. A tooltip on the map says so.
+
+![Forecast accuracy](docs/img/accuracy.png)
 
 **Forecast accuracy** at **http://127.0.0.1:4990/accuracy**:
 - **Live record:** the map server (every 20 s) and `check` store the forecast shown for each running subagent, once per call count. Only numbers are stored, in a `forecast_snaps` table. Each forecast is scored once the run finishes.
