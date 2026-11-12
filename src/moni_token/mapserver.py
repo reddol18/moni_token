@@ -219,16 +219,26 @@ function draw(){if(!D)return;
   ${t?`<div class="path mono">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">페이지 ${esc(t.page)}</div>`:''}${t.features.length?`<div class="k">기능 ${t.features.map(i=>esc(D.features[i].title)).join(', ')}</div>`:''}`:'<div class="k">아직 파일을 다루지 않음</div>'}${a.agent?fc(a.forecast):'<div class="k" title="main 에이전트는 통제(지시·검수)만 맡는 것이 권장 구성이라 진행 예측을 지원하지 않습니다. 예측은 서브에이전트에만 표시됩니다." style="cursor:help">진행 예측: main 미지원 ⓘ</div>'}${a.top_file&&a.top_file.carried>=1000?`<div class="k">가장 무거운 파일 <span class="mono">${esc(a.top_file.path)}</span> · 끌고 다닌 양 ${tk(a.top_file.carried)}</div>`:''}</div>`}).join('')||'<p class="empty">이 기간에 활동한 에이전트가 없습니다.</p>';
  tree(col);pagesFeats(col)}
 function lanes(col){
- const box=$('#lanes'),W=box.clientWidth||900,L=230,R=10,rh=22,ags=D.agents.filter(a=>a.lanes.length);
+ const box=$('#lanes'),W=box.clientWidth||900,R=10,rh=22,ags=D.agents.filter(a=>a.lanes.length);
  if(!ags.length){box.innerHTML='<p class="empty">이 기간에 도구 호출이 없습니다.</p>';return}
+ // issue #13: measure labels in the real font (a hidden <text class="lbl">), size the label column L to the widest
+ // label clamped to [160px, 30% of the width], and cut each label to fit with an ellipsis - by width, not by characters
+ box.innerHTML='<svg height="0" style="position:absolute;visibility:hidden" aria-hidden="true"><text class="lbl"></text></svg>';
+ const mt=box.querySelector('text'),tw=s=>{mt.textContent=s;return mt.getComputedTextLength()},LX=18,PAD=8;
+ const full=ags.map(a=>a.type+(a.desc?' · '+a.desc:''));
+ const L=Math.round(Math.max(160,Math.min(W*0.3,LX+PAD+Math.max(...full.map(tw))))),room=L-LX-PAD;
+ const fitLabel=s=>{if(tw(s)<=room)return s;const c=[...s];let lo=0,hi=c.length;
+  while(lo<hi){const k=(lo+hi+1)>>1;tw(c.slice(0,k).join('')+'…')<=room?lo=k:hi=k-1}return c.slice(0,lo).join('').trimEnd()+'…'};
+ const lbls=full.map(fitLabel);
  const t1=D.now,t0=t1-D.window_min*60000,x=t=>L+(t-t0)/(t1-t0)*(W-L-R),H=ags.length*rh+22;
  let g='';const hm=ms=>new Date(ms).toTimeString().slice(0,5),hms=ms=>new Date(ms).toTimeString().slice(0,8);
  // issue #10: grid lines on round clock times from the server, so they slide with the marks and labels are exact
  for(const t of D.ticks||[]){const xx=x(t),a=xx>W-R-20?'end':xx<L+20?'start':'middle';
   g+=`<line x1="${xx}" x2="${xx}" y1="0" y2="${H-18}" stroke="var(--grid)"/><text x="${xx}" y="${H-4}" text-anchor="${a}">${hm(t)}</text>`}
- ags.forEach((a,i)=>{const y=i*rh;g+=`<circle cx="8" cy="${y+11}" r="4" fill="${col[a.key]}"/><text class="lbl" x="18" y="${y+15}">${esc((a.type+(a.desc?' · '+a.desc:'')).slice(0,32))}</text>`;
+ ags.forEach((a,i)=>{const y=i*rh;g+=`<circle cx="8" cy="${y+11}" r="4" fill="${col[a.key]}"/><text class="lbl" x="${LX}" y="${y+15}" clip-path="url(#lblclip)"><title>${esc(full[i])}</title>${esc(lbls[i])}</text>`;
   a.lanes.forEach(([t,k,p])=>{if(t<t0)return;g+=`<rect class="seg" x="${x(t)-1.5}" y="${y+4}" width="4" height="14" rx="1" fill="${KIND[k]?.[1]||KIND.other[1]}" data-p="${esc(p||'')}"><title>${hms(t)} ${esc(KIND[k]?.[0]||k)}${p?' · '+esc(p):''}</title></rect>`})});
- box.innerHTML=`<svg height="${H}" role="img" aria-label="에이전트별 도구 호출 타임라인">${g}</svg>`;
+ // the clipPath is a backstop: even if measuring fails (e.g. a hidden box), no label can reach the plot area
+ box.innerHTML=`<svg height="${H}" role="img" aria-label="에이전트별 도구 호출 타임라인"><defs><clipPath id="lblclip"><rect x="0" y="0" width="${L-PAD/2}" height="${H}"/></clipPath></defs>${g}</svg>`;
  box.querySelectorAll('rect.seg').forEach(r=>r.onclick=()=>{const p=r.dataset.p;if(!p)return;focusPath=p;
   const s=p.split('/');for(let i=1;i<s.length;i++)open.add(s.slice(0,i).join('/'));tree(col);
   const el=[...$('#tree').querySelectorAll('[data-path]')].find(e=>e.dataset.path===p);if(el)el.scrollIntoView({block:'center'})})}

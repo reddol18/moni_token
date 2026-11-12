@@ -53,3 +53,14 @@ def test_page_has_pause_control_and_state_serves_a_frozen_moment(logs, tmp_path)
     finally:
         srv.shutdown()
         srv.server_close()
+
+def test_lane_labels_are_fitted_by_measured_width_not_cut_by_characters():
+    """Issue #13: labels are measured in the real font, cut with an ellipsis to fit the label column, clipped,
+    and carry the full text in a <title>; L follows the widest label within [160px, 30% of the width]."""
+    html = mapserver.page()
+    for s in ("getComputedTextLength()", "fitLabel", "'…'", "Math.max(160,Math.min(W*0.3,",
+              '<clipPath id="lblclip">', 'clip-path="url(#lblclip)"', "<title>${esc(full[i])}</title>",
+              "x=t=>L+(t-t0)/(t1-t0)*(W-L-R)"):
+        assert s in html, s
+    assert ".slice(0,32)" not in html
+    assert "L=230" not in html
