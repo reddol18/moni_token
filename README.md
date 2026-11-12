@@ -170,7 +170,11 @@ uv run moni-token map          # http://127.0.0.1:4990/
 Shows where each agent (main session and subagents) is working right now:
 
 - **Agent timeline**: one row per agent over the selected period, one mark per tool call, coloured by kind
-  (read / edit / run / web / subagent / MCP). Click a mark to jump to its file in the tree.
+  (read / edit / run / web / subagent / MCP). Click a mark to jump to its file in the tree. Grid lines sit on round
+  clock times (every 5 / 15 / 30 min), so they slide with the marks; a mark's tooltip gives its time to the second.
+- **Pause**: the `⏸ 일시정지` button (or the space bar) freezes every panel at the current moment; hover, click-to-tree,
+  search, period and project changes keep working on that moment, ◀ ▶ step by one minute, and `이 시점 링크` links to
+  it (`?at=…&project=…&window=…`). `▶ 실시간` returns to live. `?paused=1` opens the map already paused.
 - **Source tree**: the real directory tree. Files an agent read or edited in the period are bold (red when edited),
   a bar shows how often each file or folder was touched, and a ringed dot marks where each running agent is now.
   Large folders are cut at 200 entries; touched files always show. A search box filters the tree.

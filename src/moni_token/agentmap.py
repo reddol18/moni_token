@@ -16,6 +16,7 @@ import posixpath
 import re
 import sqlite3
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from .blocks import compute_blocks
@@ -263,6 +264,23 @@ def features_of(path: str, feats: list[dict]) -> list[int]:
     return [i for i, f in enumerate(feats) if any(path == p or path.startswith(p + "/") for p in f["paths"])]
 
 
+def tick_step_min(window_min: int) -> int:
+    return 5 if window_min <= 30 else 15 if window_min <= 120 else 30
+
+
+def axis_ticks(since_ms: int, now_ms: int, window_min: int) -> list[int]:
+    """Timeline grid lines on round local clock times inside [since, now] (issue #10): they slide with the marks
+    and each label is exact, instead of fixed positions whose times change on every poll."""
+    step = tick_step_min(window_min) * 60_000
+    off = int(datetime.fromtimestamp(since_ms / 1000).astimezone().utcoffset().total_seconds() * 1000)
+    t = -(-(since_ms + off) // step) * step - off     # first round local time at or after since
+    out = []
+    while t <= now_ms:
+        out.append(t)
+        t += step
+    return out
+
+
 def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_dir: str | None = None,
                 window_min: int = 30, live: bool = True) -> dict:
     """`live` is False when looking at a past moment (?at=)."""
@@ -277,7 +295,7 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
     cur = next((p for p in projs if p["project_dir"] == project_dir), None) or \
         next((p for p in projs if p["name"] == project_dir), first)
     state = dict(now=now_ms, window_min=window_min, projects=projs, project=cur, agents=[], tree=[], pages=[],
-                 features=[], window=None, costs={}, docs=[])
+                 features=[], window=None, costs={}, docs=[], ticks=axis_ticks(since, now_ms, window_min))
     if not cur:
         return state
     root = cur["root"]

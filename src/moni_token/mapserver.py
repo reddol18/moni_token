@@ -127,6 +127,9 @@ MAP_CSS = r"""
 .bar2{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 16px;border-bottom:1px solid var(--border)}
 .bar2 select,.bar2 input{font:inherit;padding:3px 8px;border-radius:6px;border:1px solid var(--border);
 background:var(--surface-1);color:var(--text-primary)}.bar2 input{width:220px}
+.bar2 button{font:inherit;padding:3px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-1);
+color:var(--text-primary);cursor:pointer}.bar2 button.on{border-color:var(--line);background:var(--surface-2)}
+#steps button{padding:3px 8px;margin-right:2px}#atlink{color:var(--line)}
 .wrap{padding:12px 16px 40px;display:grid;gap:12px}
 .cols{display:grid;grid-template-columns:minmax(260px,1fr) minmax(340px,1.5fr) minmax(260px,1fr);gap:12px}
 @media (max-width:960px){.cols{grid-template-columns:1fr}}
@@ -155,6 +158,9 @@ details[open]>summary::before{content:"▾ "}.scroll{max-height:64vh;overflow:au
 PAGE = r"""/*HEAD*/<body>/*SHELL*/
 <div class="bar2"><select id="proj" aria-label="프로젝트"></select>
 <select id="win" aria-label="기간"><option value="15">15분</option><option value="30" selected>30분</option><option value="120">2시간</option></select>
+<button type="button" id="pause" title="스페이스바로도 전환">⏸ 일시정지</button>
+<span id="steps" hidden><button type="button" id="back" title="1분 전">◀</button><button type="button" id="fwd" title="1분 뒤">▶</button></span>
+<a id="atlink" class="k" hidden>이 시점 링크</a>
 <input id="q" type="search" placeholder="트리에서 파일 찾기" aria-label="트리 검색"><span class="k" id="when"></span></div>
 <div class="wrap">
 <section class="card"><h2>에이전트 타임라인 <span class="k">· 줄마다 한 에이전트, 칸마다 도구 호출. 칸을 누르면 그 파일을 트리에서 보여 줍니다</span></h2>
@@ -172,17 +178,33 @@ const ST={running:'실행 중',idle:'멈춤',done:'완료'},tk=n=>n>=1e6?(n/1e6)
 const U=new URLSearchParams(location.search),AT=U.get('at');let proj=U.get('project');
 if(U.get('window')){const w=U.get('window'),s=$('#win');if(![...s.options].some(o=>o.value===w))s.add(new Option(w+'분',w));s.value=w}
 $('#lg').innerHTML=Object.values(KIND).map(([n,c])=>`<span><i style="background:${c}"></i>${n}</span>`).join('');
+// issue #11: `frozen` is the moment shown while paused (epoch ms); null = live. A page opened with ?at= starts frozen.
+let frozen=AT?+AT:null,seq=0;
 async function tick(){
- const q=new URLSearchParams({window:$('#win').value});if(proj)q.set('project',proj);if(AT)q.set('at',AT);
- try{D=await (await fetch('/api/state?'+q)).json()}catch(e){$('#meta').textContent='서버 연결 끊김';return}
- draw()}
+ const at=frozen,n=++seq,q=new URLSearchParams({window:$('#win').value});if(proj)q.set('project',proj);if(at!=null)q.set('at',at);
+ let d;try{d=await (await fetch('/api/state?'+q)).json()}catch(e){$('#meta').textContent='서버 연결 끊김';return}
+ if(n!==seq||at!==frozen)return;   // a newer request, or paused/resumed while this one was in flight
+ D=d;draw()}
+function pauseUi(){const p=frozen!=null;
+ $('#pause').textContent=p?'▶ 실시간':'⏸ 일시정지';$('#pause').classList.toggle('on',p);$('#steps').hidden=!p;$('#atlink').hidden=!p;
+ if(p){const q=new URLSearchParams({at:frozen,window:$('#win').value});if(proj)q.set('project',proj);$('#atlink').href='?'+q}}
+function pause(){if(frozen!=null||!D)return;frozen=D.now;seq++;draw()}   // keep the data already shown; no refetch
+function resume(){
+ if(AT){const q=new URLSearchParams(location.search);q.delete('at');q.delete('paused');q.set('window',$('#win').value);if(proj)q.set('project',proj);
+  location.href=location.pathname+'?'+q;return}
+ frozen=null;pauseUi();tick()}
+function toggle(){frozen!=null?resume():pause()}
+function step(d){if(frozen==null)return;frozen=Math.min(frozen+d,Date.now());pauseUi();tick()}
 function draw(){if(!D)return;
  const ago=ms=>{const s=Math.round((D.now-ms)/1000);return s<60?s+'초 전':s<3600?Math.round(s/60)+'분 전':Math.round(s/3600)+'시간 전'};
  const wsh=w=>w&&w.share?` · 5시간 구간의 ${Math.round(w.share*100)}%${w.pp!=null?` (≈${w.pp}%p 추정)`:''}`:'';
  $('#lim').innerHTML=shellLimits(D.header);
- $('#meta').textContent=(AT?`과거 시점 ${new Date(D.now).toLocaleString()} 기준`:`갱신 ${new Date(D.now).toLocaleTimeString()}`)+' · LLM 호출 없음 · 로컬 전용';
+ const hms=new Date(D.now).toTimeString().slice(0,8);
+ $('#meta').textContent=(frozen==null?`갱신 ${new Date(D.now).toLocaleTimeString()}`:AT&&+AT===D.now?`과거 시점 ${new Date(D.now).toLocaleDateString()} ${hms} 기준`:
+  `일시정지 · ${hms} 기준`)+' · LLM 호출 없음 · 로컬 전용';
  const sel=$('#proj');sel.innerHTML=D.projects.map(p=>`<option value="${esc(p.project_dir)}">${esc(p.name)}${p.win&&p.win.share?` · ${Math.round(p.win.share*100)}%`:''}</option>`).join('')||'<option>최근 활동 없음</option>';
  if(D.project){proj=D.project.project_dir;sel.value=proj}
+ pauseUi();
  const col={};D.agents.forEach((a,i)=>col[a.key]=i<PAL.length?PAL[i]:'var(--muted)');
  lanes(col);
  // issue #7: forecast from past runs of the same agentType (estimates, with sample size)
@@ -200,10 +222,12 @@ function lanes(col){
  const box=$('#lanes'),W=box.clientWidth||900,L=230,R=10,rh=22,ags=D.agents.filter(a=>a.lanes.length);
  if(!ags.length){box.innerHTML='<p class="empty">이 기간에 도구 호출이 없습니다.</p>';return}
  const t1=D.now,t0=t1-D.window_min*60000,x=t=>L+(t-t0)/(t1-t0)*(W-L-R),H=ags.length*rh+22;
- let g='';const hm=ms=>new Date(ms).toTimeString().slice(0,5);
- for(let i=0;i<=4;i++){const t=t0+(t1-t0)*i/4,xx=x(t);g+=`<line x1="${xx}" x2="${xx}" y1="0" y2="${H-18}" stroke="var(--grid)"/><text x="${xx}" y="${H-4}" text-anchor="middle">${hm(t)}</text>`}
+ let g='';const hm=ms=>new Date(ms).toTimeString().slice(0,5),hms=ms=>new Date(ms).toTimeString().slice(0,8);
+ // issue #10: grid lines on round clock times from the server, so they slide with the marks and labels are exact
+ for(const t of D.ticks||[]){const xx=x(t),a=xx>W-R-20?'end':xx<L+20?'start':'middle';
+  g+=`<line x1="${xx}" x2="${xx}" y1="0" y2="${H-18}" stroke="var(--grid)"/><text x="${xx}" y="${H-4}" text-anchor="${a}">${hm(t)}</text>`}
  ags.forEach((a,i)=>{const y=i*rh;g+=`<circle cx="8" cy="${y+11}" r="4" fill="${col[a.key]}"/><text class="lbl" x="18" y="${y+15}">${esc((a.type+(a.desc?' · '+a.desc:'')).slice(0,32))}</text>`;
-  a.lanes.forEach(([t,k,p])=>{if(t<t0)return;g+=`<rect class="seg" x="${x(t)-1.5}" y="${y+4}" width="4" height="14" rx="1" fill="${KIND[k]?.[1]||KIND.other[1]}" data-p="${esc(p||'')}"><title>${hm(t)} ${esc(KIND[k]?.[0]||k)}${p?' · '+esc(p):''}</title></rect>`})});
+  a.lanes.forEach(([t,k,p])=>{if(t<t0)return;g+=`<rect class="seg" x="${x(t)-1.5}" y="${y+4}" width="4" height="14" rx="1" fill="${KIND[k]?.[1]||KIND.other[1]}" data-p="${esc(p||'')}"><title>${hms(t)} ${esc(KIND[k]?.[0]||k)}${p?' · '+esc(p):''}</title></rect>`})});
  box.innerHTML=`<svg height="${H}" role="img" aria-label="에이전트별 도구 호출 타임라인">${g}</svg>`;
  box.querySelectorAll('rect.seg').forEach(r=>r.onclick=()=>{const p=r.dataset.p;if(!p)return;focusPath=p;
   const s=p.split('/');for(let i=1;i<s.length;i++)open.add(s.slice(0,i).join('/'));tree(col);
@@ -241,5 +265,10 @@ function pagesFeats(col){
 $('#proj').onchange=e=>{proj=e.target.value;open=new Set();focusPath=null;tick()};$('#win').onchange=tick;
 $('#q').oninput=()=>{if(D)tree(Object.fromEntries(D.agents.map((a,i)=>[a.key,i<PAL.length?PAL[i]:'var(--muted)'])))};
 addEventListener('resize',()=>{clearTimeout(window._r);window._r=setTimeout(draw,150)});addEventListener('themechange',draw);
-tick();setInterval(tick,3000);
+$('#pause').onclick=toggle;$('#back').onclick=()=>step(-60000);$('#fwd').onclick=()=>step(60000);
+// space toggles pause, except while typing or choosing (input/select) and on a focused button (it clicks itself)
+addEventListener('keydown',e=>{if(e.code!=='Space'||e.ctrlKey||e.altKey||e.metaKey)return;
+ if(e.target.closest&&e.target.closest('input,select,textarea,button,a,[contenteditable]'))return;e.preventDefault();toggle()});
+pauseUi();tick().then(()=>{if(U.has('paused')&&!AT)pause()});   // ?paused=1: open frozen at the first state
+setInterval(()=>{if(frozen==null)tick()},3000);
 </script></body></html>"""
