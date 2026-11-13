@@ -8,10 +8,11 @@ import statistics
 from dataclasses import dataclass, field
 
 from . import savings as sv
+from .i18n import t, unformat
 from .units import usd_parts
 
 MIN = 60_000
-OUTPUT_NOTE = "output 토큰은 로그 특성상 과소일 수 있음"
+OUTPUT_NOTE = t("analysis.note", "ko")   # stored rows before issue #12 hold this text
 
 
 @dataclass(frozen=True)
@@ -32,37 +33,8 @@ class CauseParams:
     top_share: float = 0.8                # explain sessions until this share of the window's cost
 
 
-TEMPLATES = {
-    "idle_resume": ("공백 후 재개(캐시 만료)",
-                    "{idle:.0f}분 쉰 뒤 첫 호출이 컨텍스트 {write:,}토큰을 캐시에 다시 썼다(이 구간 사용량의 {wshare:.0%}).",
-                    "캐시 TTL({ttl})이 지난 큰 대화를 이어 쓰면 대화 전체를 다시 캐시에 쓴다.",
-                    "1시간 넘게 쉰 큰 세션은 이어쓰지 말고 새 세션으로 시작하세요."),
-    "long_context": ("긴 대화 × 잦은 호출",
-                     "{calls}회 호출, 호출당 컨텍스트 중앙값 {ctx:,}토큰(최대 {ctx_max:,}), 캐시 읽기가 세션 사용량의 "
-                     "{share:.0%}.",
-                     "호출마다 긴 대화 전체를 다시 읽어 호출 수만큼 비용이 쌓였다.",
-                     "/compact 하거나 새 세션에서 이어가고, 반복 작업은 스크립트로 묶으세요."),
-    "cache_miss": ("캐시 미스",
-                   "캐시 쓰기 {write:,}토큰(세션 사용량의 {share:.0%}), 공백 없는 재기록.",
-                   "모델·설정·컨텍스트 변경 등으로 캐시가 무효화된 것으로 보인다.",
-                   "작업 중 모델·설정 전환을 줄이세요."),
-    "big_input": ("큰 입력",
-                  "직전 입력 최대 {bytes:,}바이트(이미지 {images}건), 뒤이은 캐시 쓰기 {write:,}토큰.",
-                  "큰 파일·이미지·첨부가 컨텍스트에 들어가 이후 호출이 모두 무거워졌다.",
-                  "큰 파일은 필요한 부분만 읽고, 원문은 파일로 넘기세요."),
-    "parallel": ("서브에이전트·병렬 세션",
-                 "동시 활동 세션 {n}개(프로젝트 {projects}), 사이드체인 호출 {side}회, headless {sdk}회.",
-                 "여러 세션이 같은 한도를 동시에 썼다.",
-                 "동시에 돌리는 세션 수를 줄이거나 순차로 돌리세요."),
-    "web_research": ("웹 조사 다수",
-                     "웹 도구 {n}회(WebSearch/WebFetch), 서버 웹검색 {ws}회.",
-                     "웹 결과가 컨텍스트에 쌓였다.",
-                     "조사 범위를 좁히고 결과는 요약만 남기세요."),
-    "output_burst": ("출력 폭주",
-                     "output {tokens:,}토큰(세션 사용량의 {share:.0%}).",
-                     "긴 생성이 비용의 큰 몫을 차지했다.",
-                     "긴 결과물은 파일로 쓰게 하고 출력 길이를 제한하세요."),
-}
+# Each cause has catalog keys cause.<code>.label / .fact / .interp / .advice (locales/*.json, issue #12).
+CODES = ("idle_resume", "long_context", "cache_miss", "big_input", "parallel", "web_research", "output_burst")
 
 
 @dataclass
@@ -79,6 +51,10 @@ class Cause:
     saving_usd: float = 0.0    # counterfactual saving under `alternative` (savings.py)
     alternative: str = ""      # the alternative, with its assumptions spelled out
     saving_share: float = 0.0  # saving / the window's usage
+    # issue #12: what the sentences are made of, stored with the event so it re-renders in any language
+    params: dict | None = None     # placeholders of cause.<code>.fact / .interp
+    alt_key: str = ""              # catalog key of `alternative`
+    alt_params: dict | None = None
 
 
 @dataclass
@@ -91,25 +67,74 @@ class Analysis:
     causes: list[Cause] = field(default_factory=list)
     agents: list[dict] = field(default_factory=list)   # per project folder: share of the window's usage
     note: str = OUTPUT_NOTE
+    lang: str = "ko"
 
     def headline(self) -> str:
-        if not self.causes:
-            return "뚜렷한 원인 규칙 없음"
-        c = self.causes[0]
-        return f"{c.label} (구간의 {c.usd / self.usd:.0%})" if self.usd else c.label
+        return localize_headline(self.usd, [dict(label=c.label, usd=c.usd) for c in self.causes], self.lang)
 
 
-def _make(code, scope, usd, facts, /, **fmt) -> Cause:
-    label, fact_t, interp, advice = TEMPLATES[code]
-    return Cause(code, scope, usd, facts, label, fact_t.format(**fmt), interp.format(**fmt) + " (추정)", advice)
+def cause_texts(code: str, params: dict, lang: str) -> dict:
+    kw = dict(params)
+    if "ttl" in kw:
+        kw["ttl"] = t(f"ttl.{kw['ttl']}", lang)
+    k = f"cause.{code}."
+    return dict(label=t(k + "label", lang), fact_text=t(k + "fact", lang, **kw),
+                interpretation=t("cause.estimate", lang, text=t(k + "interp", lang, **kw)), advice=t(k + "advice", lang))
 
 
-def _save(c: Cause, result: tuple[float, str]) -> None:
-    c.saving_usd, c.alternative = round(result[0], 4), result[1]
+def localize_cause(c: dict, lang: str) -> dict:
+    """A stored cause (causes_json) with its sentences in `lang`.
+
+    Rows written before issue #12 carry no params, only Korean text. Their numbers are recovered by matching that
+    text against the Korean template (i18n.unformat); the fixed parts (label, interpretation, advice, advice-only
+    alternatives) are mapped by code. A sentence that doesn't match its template keeps the stored text."""
+    c = dict(c)
+    code = c.get("code")
+    if code not in CODES:
+        return c
+    ttl = (c.get("facts") or {}).get("ttl")
+    params = c.get("params")
+    if params is None:
+        params = unformat(t(f"cause.{code}.fact", "ko"), c.get("fact_text") or "")
+        if params is not None and code == "idle_resume":
+            params = dict(params, ttl=ttl) if ttl in ("1h", "5m") else None
+    if params is not None:
+        c.update(cause_texts(code, params, lang))
+    else:
+        k = f"cause.{code}."
+        c.update(label=t(k + "label", lang), advice=t(k + "advice", lang))
+        if code != "idle_resume" or ttl in ("1h", "5m"):
+            c["interpretation"] = t("cause.estimate", lang,
+                                    text=t(k + "interp", lang, ttl=t(f"ttl.{ttl}", lang) if ttl else ""))
+    if c.get("alt_key"):
+        c["alternative"] = t(c["alt_key"], lang, **(c.get("alt_params") or {}))
+    elif code in sv.ADVICE_ONLY:
+        c["alternative"] = t(sv.ADVICE_ONLY[code], lang)
+    elif c.get("alternative"):
+        ap = unformat(t(f"save.{code}", "ko"), c["alternative"])
+        if ap is not None:
+            c["alternative"] = t(f"save.{code}", lang, **ap)
+    return c
+
+
+def localize_headline(usd: float, causes: list[dict], lang: str) -> str:
+    if not causes:
+        return t("analysis.no_cause", lang)
+    c = causes[0]
+    return t("analysis.headline", lang, label=c["label"], share=c["usd"] / usd) if usd else c["label"]
+
+
+def _make(code, scope, usd, facts, lang, /, **fmt) -> Cause:
+    return Cause(code, scope, usd, facts, **cause_texts(code, fmt, lang), params=fmt)
+
+
+def _save(c: Cause, result: tuple[float, str, dict], lang: str) -> None:
+    c.saving_usd, c.alt_key, c.alt_params = round(result[0], 4), result[1], result[2]
+    c.alternative = t(c.alt_key, lang, **c.alt_params)
 
 
 def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0,
-                    sp: sv.SavingParams = sv.SavingParams()) -> list[Cause]:
+                    sp: sv.SavingParams = sv.SavingParams(), lang: str = "ko") -> list[Cause]:
     sid = rows[0]["session_id"]
     parts = {k: sum(r["parts"][k] for r in rows) for k in rows[0]["parts"]}
     total = sum(parts.values()) or 1e-12
@@ -128,10 +153,10 @@ def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0,
                 usd = r["parts"]["cache_write_1h"] + r["parts"]["cache_write_5m"]
                 out.append(_make("idle_resume", sid, usd,
                                  dict(idle_min=round(idle, 1), cache_write_tokens=write, usd=round(usd, 4),
-                                      ttl="1h" if ttl == p.idle_min_1h else "5m", at_ms=r["ts_ms"]),
+                                      ttl="1h" if ttl == p.idle_min_1h else "5m", at_ms=r["ts_ms"]), lang,
                                  idle=idle, write=write, wshare=usd / (window_total or total),
-                                 ttl="1시간" if ttl == p.idle_min_1h else "5분"))
-                _save(out[-1], sv.idle_resume(rows, r["ts_ms"], sp))
+                                 ttl="1h" if ttl == p.idle_min_1h else "5m"))
+                _save(out[-1], sv.idle_resume(rows, r["ts_ms"], sp), lang)
         last = r["ts_ms"]
 
     # 2) long context x many calls
@@ -142,9 +167,9 @@ def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0,
         usd = parts["cache_read"] + parts["input"]
         out.append(_make("long_context", sid, usd,
                          dict(calls=len(rows), ctx_median=med, ctx_max=max(ctx), cache_read_usd=round(parts["cache_read"], 4),
-                              cache_read_share=round(read_share, 3)),
+                              cache_read_share=round(read_share, 3)), lang,
                          calls=len(rows), ctx=med, ctx_max=max(ctx), read=parts["cache_read"], share=read_share))
-        _save(out[-1], sv.long_context(rows, sp))
+        _save(out[-1], sv.long_context(rows, sp), lang)
 
     # 3) cache miss not explained by idle resume
     other = [r for r in rows if r["msg_id"] not in idle_ids]
@@ -161,32 +186,34 @@ def _session_causes(rows, prev_ts, p: CauseParams, window_total: float = 0.0,
             mx = max(max(r["prev_result_bytes"], r["prev_attach_bytes"]) for r in big)
             imgs = sum(r["prev_result_image"] for r in big)
             out.append(_make("big_input", sid, b_usd, dict(max_bytes=mx, images=imgs, cache_write_tokens=b_write),
-                             bytes=mx, images=imgs, write=b_write))
-            _save(out[-1], sv.big_input(rows, big, sp))
+                             lang, bytes=mx, images=imgs, write=b_write))
+            _save(out[-1], sv.big_input(rows, big, sp), lang)
             w_usd -= b_usd
             w_tok -= b_write
     if w_usd / total >= p.cache_write_share:
         out.append(_make("cache_miss", sid, w_usd, dict(cache_write_tokens=w_tok, share=round(w_usd / total, 3)),
-                         write=w_tok, usd=w_usd, share=w_usd / total))
-        _save(out[-1], sv.cache_miss(w_tok, rows[0]["model"], sp))
+                         lang, write=w_tok, usd=w_usd, share=w_usd / total))
+        _save(out[-1], sv.cache_miss(w_tok, rows[0]["model"], sp), lang)
 
     # 5) web research
     web = sum(r["web_tools"] for r in rows)
     ws = sum(r["web_search_n"] for r in rows)
     if web + ws >= p.web_calls:
         out.append(_make("web_research", sid, parts["web_search"], dict(web_tool_calls=web, server_web_search=ws),
-                         n=web, ws=ws))
+                         lang, n=web, ws=ws))
 
     # 6) output burst
     if parts["output"] / total >= p.output_share:
         tok = sum(r["output"] for r in rows)
         out.append(_make("output_burst", sid, parts["output"],
-                         dict(output_tokens=tok, output_usd=round(parts["output"], 4), note=OUTPUT_NOTE),
-                         usd=parts["output"], share=parts["output"] / total, tokens=tok))
+                         dict(output_tokens=tok, output_usd=round(parts["output"], 4), note=t("analysis.note", lang)),
+                         lang, usd=parts["output"], share=parts["output"] / total, tokens=tok))
     return out
 
 
-def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams = CauseParams()) -> Analysis:
+def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams = CauseParams(),
+            lang: str = "ko") -> Analysis:
+    """`lang` is the language of the sentences built now; stored events re-render from `params` (issue #12)."""
     cols = ("msg_id ts_ms session_id project_dir project agent_id is_sidechain entrypoint model input output "
             "cache_read cache_5m cache_1h web_search_n prev_result_bytes prev_result_image prev_attach_bytes").split()
     rows = [dict(zip(cols, r)) for r in con.execute(
@@ -200,7 +227,7 @@ def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams 
         r["usd"] = sum(r["parts"].values())
         r["web_tools"] = web_by_msg.get(r["msg_id"], 0)
     total = sum(r["usd"] for r in rows)
-    a = Analysis(start_ms, end_ms, total, len(rows))
+    a = Analysis(start_ms, end_ms, total, len(rows), note=t("analysis.note", lang), lang=lang)
     if not rows:
         return a
 
@@ -220,7 +247,7 @@ def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams 
         acc += s_usd
         prev = con.execute("SELECT MAX(ts_ms) FROM calls WHERE session_id = ? AND ts_ms < ?",
                            (sid, start_ms)).fetchone()[0]
-        a.causes += _session_causes(rs, prev, p, total)
+        a.causes += _session_causes(rs, prev, p, total, lang=lang)
 
     # agent = project folder (subagent / headless calls fold into their project, shown as sub-shares)
     by_proj: dict[str, list] = {}
@@ -243,11 +270,12 @@ def analyze(con: sqlite3.Connection, start_ms: int, end_ms: int, p: CauseParams 
         non_top = sum(s["usd"] for s in active[1:])
         a.causes.append(_make("parallel", "all", non_top,
                               dict(active_sessions=len(active), projects=projects, sidechain_calls=side, sdk_calls=sdk),
-                              n=len(active), projects=", ".join(projects), side=side, sdk=sdk))
+                              lang, n=len(active), projects=", ".join(projects), side=side, sdk=sdk))
     for c in a.causes:
         c.share = round(c.usd / total, 3) if total else 0.0
         c.saving_share = round(min(c.saving_usd, total) / total, 3) if total else 0.0
         if c.code in sv.ADVICE_ONLY:
-            c.alternative = sv.ADVICE_ONLY[c.code]
+            c.alt_key, c.alt_params = sv.ADVICE_ONLY[c.code], {}
+            c.alternative = t(c.alt_key, lang)
     a.causes.sort(key=lambda c: -c.usd)
     return a

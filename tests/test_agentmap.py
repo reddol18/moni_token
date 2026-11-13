@@ -237,7 +237,7 @@ def test_server_is_loopback_only_and_checks_host(logs, tmp_path):
         assert status == 200 and b"http://" not in body.replace(b"http://127.0.0.1", b"")   # no external resources
         status, body = get("/api/state")
         assert status == 200 and json.loads(body)["agents"] == [] and "header" in json.loads(body)
-        status, body = get("/usage")
+        status, body = get("/usage?lang=ko")
         assert status == 200 and "한도 사용률".encode() in body and b"cdn" not in body.lower()
         assert get("/", host="evil.example:80")[0] == 403
     finally:

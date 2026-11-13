@@ -14,22 +14,23 @@ import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from .i18n import t
 from .units import call_usd, price_for, table
 
-CATEGORIES = [
-    ("파일 읽기", lambda n: n in ("Read", "NotebookRead")),
-    ("셸 출력", lambda n: n in ("Bash", "PowerShell", "BashOutput", "TaskOutput")),
-    ("검색", lambda n: n in ("Grep", "Glob", "ToolSearch")),
-    ("MCP(DB·외부 도구)", lambda n: n.startswith("mcp__")),
-    ("웹", lambda n: n in ("WebFetch", "WebSearch")),
-    ("서브에이전트 결과", lambda n: n in ("Task", "Agent", "Workflow")),
+CATEGORIES = [   # catalog keys chunk.<code>
+    ("read", lambda n: n in ("Read", "NotebookRead")),
+    ("shell", lambda n: n in ("Bash", "PowerShell", "BashOutput", "TaskOutput")),
+    ("search", lambda n: n in ("Grep", "Glob", "ToolSearch")),
+    ("mcp", lambda n: n.startswith("mcp__")),
+    ("web", lambda n: n in ("WebFetch", "WebSearch")),
+    ("agent", lambda n: n in ("Task", "Agent", "Workflow")),
 ]
 
 
-def category(name: str | None) -> str:
+def category(name: str | None, lang: str = "ko") -> str:
     if not name:
-        return "기타(이름 없음)"
-    return next((label for label, ok in CATEGORIES if ok(name)), f"기타({name})")
+        return t("chunk.unnamed", lang)
+    return next((t(f"chunk.{code}", lang) for code, ok in CATEGORIES if ok(name)), t("chunk.other", lang, name=name))
 
 
 @dataclass
@@ -126,7 +127,8 @@ def measure_results(con: sqlite3.Connection, start_ms: int, end_ms: int, project
                              tok * pin * wm + tok * later * pin * mul["cache_read"])
 
 
-def analyze_chunks(con: sqlite3.Connection, start_ms: int, end_ms: int, min_tokens: int = 5_000) -> dict:
+def analyze_chunks(con: sqlite3.Connection, start_ms: int, end_ms: int, min_tokens: int = 5_000,
+                   lang: str = "ko") -> dict:
     calls: list = []
     measured = list(measure_results(con, start_ms, end_ms, calls_sink=calls))
     agents: dict[str, AgentChunks] = {}
@@ -144,7 +146,7 @@ def analyze_chunks(con: sqlite3.Connection, start_ms: int, end_ms: int, min_toke
         a.chunk_sizes.append(m.tokens)
         a.carried_tokens += m.carried
         a.carried_usd += m.usd
-        cat = a.by_category[category(m.name)]
+        cat = a.by_category[category(m.name, lang)]
         cat[0] += 1
         cat[1] += m.carried
         cat[2] += m.usd

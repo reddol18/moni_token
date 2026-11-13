@@ -1,4 +1,9 @@
-"""Record incidents: a spike (or a user-chosen window) plus its cause analysis and per-agent shares."""
+"""Record incidents: a spike (or a user-chosen window) plus its cause analysis and per-agent shares.
+
+Each cause in causes_json carries its template key (`code`, `alt_key`) and numbers (`params`, `alt_params`)
+next to the finished sentences, so the pages re-render it in the viewer's language (issue #12). The headline
+column is a fallback; displays rebuild it from the first cause. No schema change: it all lives in the JSON.
+"""
 import json
 import sqlite3
 from dataclasses import asdict
@@ -31,8 +36,9 @@ def record(con: sqlite3.Connection, kind: str, a: Analysis, now_ms: int, spike: 
     return eid
 
 
-def record_spike(con: sqlite3.Connection, s: Spike, now_ms: int, p: CauseParams = CauseParams()) -> tuple[int, Analysis]:
-    a = analyze(con, *spike_window(s), p)
+def record_spike(con: sqlite3.Connection, s: Spike, now_ms: int, p: CauseParams = CauseParams(),
+                 lang: str = "ko") -> tuple[int, Analysis]:
+    a = analyze(con, *spike_window(s), p, lang=lang)
     return record(con, s.kind, a, now_ms, s), a
 
 

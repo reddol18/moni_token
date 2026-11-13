@@ -6,6 +6,8 @@ Overlapping alternatives are not added up — an event is summarised by its sing
 """
 from collections import defaultdict
 
+from .i18n import t
+
 
 def _pp(e: dict, c: dict, usd_per_pct: float | None) -> float | None:
     if e.get("rise"):
@@ -20,20 +22,25 @@ def best_alternative(e: dict) -> dict | None:
     return max(cands, key=lambda c: c["saving_usd"]) if cands else None
 
 
-def event_summary(e: dict, usd_per_pct: float | None) -> str:
+def event_summary(e: dict, usd_per_pct: float | None, lang: str = "ko") -> str:
     b = best_alternative(e)
     if not b:
         first = e["causes"][0] if e["causes"] else None
         if not first:
-            return "규칙에 맞는 원인이 없어 절약 방안을 계산하지 않았다."
-        return f"주원인은 {first['label']}. {first.get('alternative') or first['advice']}"
+            return t("summary.no_cause", lang)
+        return t("summary.main_cause", lang, label=first["label"], rest=first.get("alternative") or first["advice"])
     pp = _pp(e, b, usd_per_pct)
-    amount = (f"약 {pp:.1f}%p" + (f"(상승 +{e['rise']:.1f}%p의 {b['saving_share']:.0%})" if e.get("rise") else ""))\
-        if pp is not None else f"구간 사용량의 약 {b['saving_share']:.0%}"
-    return f"{amount}를 줄일 수 있었다 — {b['label']}: {b['alternative']} → {b['advice']}"
+    if pp is None:
+        amount = t("summary.amount_share", lang, share=b["saving_share"])
+    elif e.get("rise"):
+        amount = t("summary.amount_pp_rise", lang, pp=pp, rise=e["rise"], share=b["saving_share"])
+    else:
+        amount = t("summary.amount_pp", lang, pp=pp)
+    return t("summary.event", lang, amount=amount, label=b["label"], alternative=b["alternative"], advice=b["advice"])
 
 
-def digest(events: list[dict], usd_per_pct: float | None, week_usd_per_pct: float | None = None) -> dict:
+def digest(events: list[dict], usd_per_pct: float | None, week_usd_per_pct: float | None = None,
+           lang: str = "ko") -> dict:
     """Per cause over the period: how often it led an event, and the total of its best-alternative savings."""
     by = defaultdict(lambda: dict(events=0, pp=0.0, share_sum=0.0, label="", advice="", alternative=""))
     for e in events:
@@ -47,10 +54,10 @@ def digest(events: list[dict], usd_per_pct: float | None, week_usd_per_pct: floa
         d["label"], d["advice"], d["alternative"] = b["label"], b["advice"], b["alternative"]
     rows = sorted(by.values(), key=lambda d: (-d["pp"], -d["events"]))
     total = sum(d["pp"] for d in rows)
-    lines = [f"{d['label']}: 사건 {d['events']}건, 줄일 수 있었던 양 약 {d['pp']:.1f}%p → {d['advice']}" for d in rows]
+    lines = [t("digest.line", lang, label=d["label"], events=d["events"], pp=d["pp"], advice=d["advice"]) for d in rows]
     # 5-hour %p summed over many windows is hard to feel; the weekly limit is the common denominator
     week = total * usd_per_pct / week_usd_per_pct if (usd_per_pct and week_usd_per_pct) else None
-    week_txt = f" — 주간 한도로 환산하면 약 {week:.1f}%" if week is not None else ""
-    head = (f"최근 사건 {len(events)}건 중 {sum(d['events'] for d in rows)}건에서 절약 여지가 있었고, 합계 약 "
-            f"{total:.1f}%p(5시간 한도 기준){week_txt}를 아낄 수 있었다." if rows else "절약 여지가 계산된 사건이 없다.")
+    week_txt = t("digest.week", lang, week=week) if week is not None else ""
+    head = (t("digest.head", lang, n=len(events), k=sum(d["events"] for d in rows), total=total, week=week_txt)
+            if rows else t("digest.none", lang))
     return dict(headline=head, items=rows, lines=lines, total_pp=total, total_week_pct=week)

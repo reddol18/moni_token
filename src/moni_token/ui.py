@@ -2,8 +2,13 @@
 
 Everything is inlined into the page: no CDN, no web fonts, no requests. uPlot (MIT) is vendored under vendor/uplot.
 """
+import json
+import re
 from functools import cache
+from html import escape
 from pathlib import Path
+
+from .i18n import NATIVE, page_strings, t
 
 VENDOR = Path(__file__).parent / "vendor" / "uplot"
 
@@ -41,27 +46,54 @@ tbody tr:nth-child(even) td{background:var(--surface-2)}td.n,th.n{text-align:rig
 .u-select{background:color-mix(in srgb,var(--line) 15%,transparent)}
 """
 
+# Strings come from the embedded catalog (window.I18N, issue #12); dates and numbers use Intl in the page's locale,
+# always on a 24-hour clock. The language choice is kept per viewer in localStorage and applied via ?lang=.
 SHELL_JS = r"""
-(function(){const k='moni_token.theme',r=document.documentElement;
+(function(){const k='moni_token.theme',kl='moni_token.lang',r=document.documentElement;
  try{const t=localStorage.getItem(k);if(t)r.dataset.theme=t}catch(e){}
+ window.T=function(key,v){let s=window.I18N[key]??key;if(v)s=s.replace(/\{(\w+)\}/g,(m,n)=>v[n]??m);return s};
+ const LOC=window.I18N['p.locale']||'en-US',dtf=o=>new Intl.DateTimeFormat(LOC,Object.assign({hourCycle:'h23'},o)),
+  F1=dtf({month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}),F2=dtf({hour:'2-digit',minute:'2-digit'}),
+  F3=dtf({hour:'2-digit',minute:'2-digit',second:'2-digit'}),F4=dtf({month:'numeric',day:'numeric'}),
+  F5=dtf({year:'numeric',month:'2-digit',day:'2-digit'}),NF=new Intl.NumberFormat(LOC);
+ window.fmtDT=ms=>F1.format(ms);window.fmtHM=ms=>F2.format(ms);window.fmtHMS=ms=>F3.format(ms);
+ window.fmtMD=ms=>F4.format(ms);window.fmtDate=ms=>F5.format(ms);window.fmtN=n=>NF.format(n);
+ // a served page opened without ?lang= follows the viewer's last choice
+ try{const s=localStorage.getItem(kl),u=new URL(location.href);
+  if(s&&s!==window.LANG&&!u.searchParams.has('lang')&&location.protocol.startsWith('http')){u.searchParams.set('lang',s);location.replace(u.href)}}catch(e){}
+ window.toggleLang=function(){const n=window.LANG==='ko'?'en':'ko';try{localStorage.setItem(kl,n)}catch(e){}
+  const u=new URL(location.href);u.searchParams.set('lang',n);location.href=u.href};
  window.toggleTheme=function(){const dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;
   r.dataset.theme=dark?'light':'dark';try{localStorage.setItem(k,r.dataset.theme)}catch(e){};
   window.dispatchEvent(new Event('themechange'))};
  window.cssVar=n=>getComputedStyle(r).getPropertyValue(n).trim();
  window.shellLimits=function(H){const pc=v=>v==null?'—':(v<10?v.toFixed(1):Math.round(v))+'%',
-  hm=ms=>new Date(ms).toTimeString().slice(0,5),one=(k,x)=>x&&x.pct!=null?`<span>${k} <b>${pc(x.pct)}</b>${x.basis==='estimated'?' <span class="badge">추정</span>':''}${x.reset?' · 초기화 '+hm(x.reset):''}</span>`:'';
+  one=(k,x)=>x&&x.pct!=null?`<span>${k} <b>${pc(x.pct)}</b>${x.basis==='estimated'?` <span class="badge">${T('p.est')}</span>`:''}${x.reset?' · '+T('p.reset',{t:fmtHM(x.reset)}):''}</span>`:'';
   const e=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  return one('5시간',H&&H.five_hour)+one('주간',H&&H.seven_day)+(H&&H.warning?`<span class="warn">${e(H.warning)}</span>`:'')}})();
+  return one(T('p.lim5'),H&&H.five_hour)+one(T('p.lim7'),H&&H.seven_day)+(H&&H.warning?`<span class="warn">${e(H.warning)}</span>`:'')}})();
 """
 
 
-def shell_html(current: str, base: str = "") -> str:
-    """Top bar: brand, the two pages, limit strip (filled by JS), meta, theme toggle."""
-    tab = lambda key, href, label: f'<a href="{href}"{" aria-current=page" if key == current else ""}>{label}</a>'
-    return (f'<header class="shell"><span class="brand">moni_token</span><nav>{tab("map", base + "/", "에이전트 지도")}'
-            f'{tab("usage", base + "/usage", "사용량")}{tab("accuracy", base + "/accuracy", "예측 정확도")}</nav><span class="lim" id="lim"></span><span class="sp"></span>'
-            f'<span class="meta" id="meta"></span><button type="button" onclick="toggleTheme()" '
-            f'aria-label="테마 전환">◐ 테마</button></header>')
+def fill(html: str, lang: str) -> str:
+    """Replace [[key]] markers in a page template with the (escaped) catalog text."""
+    return re.sub(r"\[\[([\w.]+)\]\]", lambda m: escape(t(m.group(1), lang), quote=True), html)
+
+
+def shell_html(current: str, base: str = "", lang: str = "ko") -> str:
+    """Top bar: brand, the pages, limit strip (filled by JS), meta, language and theme toggles.
+    Links carry ?lang= so the choice survives navigation. The static report (base set) has no language toggle:
+    its language is fixed when the file is written."""
+    q = f"?lang={lang}"
+    tab = lambda key, href, label: (f'<a href="{href}{q}"{" aria-current=page" if key == current else ""}>'
+                                    f'{escape(t(label, lang))}</a>')
+    other = "en" if lang == "ko" else "ko"
+    toggle = "" if base else (f'<button type="button" onclick="toggleLang()" lang="{other}" '
+                              f'aria-label="{escape(t("p.lang_aria", lang))}">{NATIVE[other]}</button>')
+    return (f'<header class="shell"><span class="brand">moni_token</span><nav>{tab("map", base + "/", "p.nav.map")}'
+            f'{tab("usage", base + "/usage", "p.nav.usage")}{tab("accuracy", base + "/accuracy", "p.nav.accuracy")}</nav>'
+            f'<span class="lim" id="lim"></span><span class="sp"></span><span class="meta" id="meta"></span>{toggle}'
+            f'<button type="button" onclick="toggleTheme()" aria-label="{escape(t("p.theme_aria", lang))}">'
+            f'{escape(t("p.theme", lang))}</button></header>')
 
 
 @cache
@@ -74,7 +106,9 @@ def uplot_css() -> str:
     return (VENDOR / "uPlot.min.css").read_text(encoding="utf-8")
 
 
-def head(title: str, extra_css: str = "") -> str:
-    return (f'<!doctype html>\n<html lang="ko"><head><meta charset="utf-8">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>'
-            f'<style>{uplot_css()}{TOKENS}{extra_css}</style><script>{SHELL_JS}</script></head>')
+def head(title: str, extra_css: str = "", lang: str = "ko") -> str:
+    strings = json.dumps(page_strings(lang), ensure_ascii=False).replace("</", "<\\/")
+    return (f'<!doctype html>\n<html lang="{lang}"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title>'
+            f'<style>{uplot_css()}{TOKENS}{extra_css}</style>'
+            f'<script>window.LANG={json.dumps(lang)};window.I18N={strings};{SHELL_JS}</script></head>')

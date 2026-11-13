@@ -2,6 +2,28 @@
 
 **English** · [한국어](README.ko.md)
 
+**moni_token is a local usage monitor for Claude Code that never calls an LLM, so it spends zero tokens.** It reads
+Claude Code's own logs on your PC. It shows your 5-hour and weekly limit % against a baseline of your usual range, and
+it explains every spike with rule-based causes (which session, which pattern, how much you could have saved). A live
+agent map shows where the main session and its subagents are working in your source tree. Each running subagent gets
+a progress forecast, and the tool scores how accurate those forecasts turn out to be. Nothing leaves your machine.
+
+## Quick start
+
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/) (more under [Install](#install)).
+
+```powershell
+git clone https://github.com/reddol18/moni_token.git; cd moni_token; uv sync
+uv run moni-token collect     # read existing Claude Code logs into ~/.moni_token/usage.db
+uv run moni-token map         # usage page, agent map and forecast accuracy at http://127.0.0.1:4990/
+```
+
+The UI is in English or Korean. Pick one with `?lang=en|ko` on a page, `--lang` on the CLI or `lang = "en"` in
+`~/.moni_token/config.toml`; otherwise the OS locale decides. The page header also has a toggle
+(see [Adding a language](#adding-a-language)).
+
+---
+
 > "I only did a little work, so why did 5% of my Claude limit disappear in 50 minutes?"
 
 moni_token reads Claude Code's local logs and answers that question. When your limit usage jumps, it tells you
@@ -30,7 +52,7 @@ Principles:
 
 ![moni_token dashboard](docs/img/dashboard.png)
 
-<sub>Screenshot from synthetic demo data (`scripts/demo_report.py`). The dashboard UI is currently in Korean.
+<sub>Screenshot from synthetic demo data (`scripts/demo_report.py --lang en`).
 Dark theme: [docs/img/dashboard-dark.png](docs/img/dashboard-dark.png) — it follows the OS setting, or the ◐ button.</sub>
 
 Charts are drawn with [uPlot](https://github.com/leeoniya/uPlot), bundled in the repo: drag to zoom, double-click to
@@ -64,6 +86,8 @@ The cause and its numbers are facts from the logs; the interpretation is labelle
 
 ## How it differs from existing tools
 
+**Usage and cost tools**
+
 | Tool | What it does well | What moni_token adds |
 |---|---|---|
 | [ccusage](https://github.com/ryoppippi/ccusage) | Token and cost totals per day, session and 5-hour block | Explains *why* a period was expensive and records it as an incident |
@@ -72,8 +96,73 @@ The cause and its numbers are facts from the logs; the interpretation is labelle
 | [claude-hud](https://github.com/jarrodwatts/claude-hud) | Status line: context, limits, active tools, running agents, todos | Spike warning with its cause in front of claude-hud's line (moni_token wraps it rather than re-implementing it) |
 | [agents-observe](https://github.com/simple10/agents-observe) | Hook events into a local web UI: subagent tree, timeline, per-agent tokens | Positions on the source tree / UI pages / contract features; reads past sessions from the logs; no Docker, no prompt or file text stored |
 
+**Progress and time-left tools** (as described on each tool's own page, checked 2026-11-13; "not stated" means the
+page does not say, not "no")
+
+| Tool | Shows | How progress / time is estimated | Model calls | Tracks own accuracy | 5-hour / weekly limit | Runs as |
+|---|---|---|---|---|---|---|
+| Claude Code built-in subagent progress summaries | Short status text on each running subagent's row | Written by a model from the subagent's work | Yes: the changelog calls them "requests"; cost is reported by users, not documented | No | No | Built in; off with `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES=1` |
+| [claude-time-left](https://github.com/DJsluxx/claude-time-left) | Subagents, long tool calls, current turn: elapsed, time left, bar | Median of the last 20 runs of the same kind (`agent:Explore`, `tool:Bash`); built-in default marked `(guess)` | Not stated | No (shows "over by …") | Not mentioned | Plugin pane beside the chat |
+| [claude-time-estimate](https://github.com/TomerBenShimol/claude-time-estimate) | Countdown above the prompt; background agents with `sub-agents 2/5` | Task list: average time per completed task × open tasks; else median of past responses longer than the current one (≥5 needed) | None described; no network calls | No ("a rough guide") | Not mentioned | Mod band above the prompt |
+| [claude-code-progress-board](https://github.com/ewxgwy1987/claude-code-progress-board) | Goal, tasks, subagents, workflows, tool activity, each with bar and time left | Median of the last 30 durations of the same kind; % = elapsed / estimate, capped until done | Timers: none. One small Haiku call (≤120 output tokens) to name an untitled workflow agent | No (flags "over estimate") | Not mentioned (points to a separate meter) | Mod pane (terminal and desktop) |
+| [progress-hud](https://github.com/jandro-es/progress-hud) | Subagents, tasks, shells, totals: ETA, cost, burn rate, context, rate-limit windows | Durations learned across sessions; time-based bars; task done/total | Not stated; cost priced from token counts | Not stated | Shows rate-limit windows | Mod pane + one-line status line |
+| [task-progress-bar](https://github.com/PRAFULREDDYM/task-progress-bar) | Task completion %, done / in progress / pending, time left | Task files; EMA (α 0.3) of intervals between completions × tasks left | None ("no tokens consumed") | No | No | Status line + `PostToolUse` hook, also CLI |
+| [claude-code-agent-status](https://github.com/hg913488/claude-code-agent-status) | Main thread + up to 12 subagents: current action, progress, model, elapsed | Task list done/total; otherwise a step-based estimate capped at 90% | Not stated; "nothing is added to Claude's prompt" | Not stated | Not mentioned | Mod panel (`/agent-status`) |
+| [savvy-progress](https://claude-mods.com/savvy-progress/) | Every subagent: task, model, effort, context fill, cost, elapsed | Counts only: planned tasks (with savvy-flow) and steps the worker reports; no forecast | No model calls; adds a short tool description to the prompt | No | No | Mod panel + bar above the prompt |
+| **moni_token** | Limit % with baselines, spike causes, agent map, per-file token cost | Subagents compared with ≥10 finished runs of the same `agentType` that got as far: P50/P85 for calls, time and remaining 5-hour %p | None | Yes: `/accuracy` page and `moni-token forecast` replay | Yes: both, with baselines | Local web page + status-line segment |
+
+- **Built-in summaries.** Officially, the [changelog](https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md)
+  (2.1.323) says `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES=1` turns off "subagent progress summaries and the
+  requests that write them"; the variable has existed since 2.1.318. As of 2026-11-13 the
+  [env-var docs page](https://code.claude.com/docs/en/env-vars) does not list it. The cost is *reported*, not
+  documented: [one test](https://bestagent.dev/claude-code-background-agent-labels-cost-2026) measured 0.1–0.2% of
+  session cost with Haiku writing the labels, and about 19% when telemetry was off and the whole agent context went to
+  the main model; other reports range up to 15–20%. moni_token does not replace these labels; it records what you
+  spend, with or without them.
+- **Where the others are better.** Most of these tools live inside Claude Code as a pane, band or status line, so you
+  see progress without leaving the terminal. moni_token's map and forecasts are on a local web page; only the spike
+  warning is on the status line. claude-time-estimate, task-progress-bar and claude-code-agent-status use Claude's own
+  task list (`TaskCreate` / `TodoWrite`) for progress. moni_token does not; it reads checklist ticks only from
+  contract documents. progress-hud also tracks shells and per-agent cost, and claude-time-left and progress-board also
+  time tool calls and the main turn.
+- **Where moni_token differs.** It forecasts subagents only (the main agent gets none) and works in calls, minutes and
+  5-hour %p, not just minutes. It conditions on how far a run has already got. It is the only tool here that scores
+  its own forecasts, on an `/accuracy` page. None of the progress tools above ties a forecast to the 5-hour or weekly
+  limit. progress-hud shows the rate-limit windows, but it does not forecast against them.
+- **Cold start.** moni_token needs 10 comparable past runs before it shows a forecast. claude-time-estimate needs 1
+  run for agents and 5 for turns, and claude-time-left and progress-board start from a default or show "no estimate
+  yet".
+- **Token use.** moni_token, task-progress-bar and claude-time-estimate describe no model calls. progress-board makes
+  one small Haiku call in one case, and savvy-progress adds a short tool description to the prompt.
+  claude-time-left, progress-hud and claude-code-agent-status do not say either way.
+- **Licences.** Every tool here is MIT except claude-time-estimate, whose page states no licence.
+
 moni_token does not try to replace these tools. Use ccusage for totals and claude-hud for the live HUD; use moni_token
 when a number surprises you or you want to see where your agents are.
+
+<details>
+<summary>Sources (checked 2026-11-13)</summary>
+
+Official (Anthropic):
+- [Claude Code changelog](https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md): the 2.1.318,
+  2.1.321 and 2.1.323 entries on progress summaries
+- [Environment variables docs](https://code.claude.com/docs/en/env-vars): `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES` is not listed
+- [Subagents docs](https://code.claude.com/docs/en/sub-agents): no section on progress summaries
+
+Reported by the community (not official):
+- [bestagent.dev](https://bestagent.dev/claude-code-background-agent-labels-cost-2026): one-machine measurement,
+  0.1–0.2% with Haiku labels, ~19% with telemetry off
+- [wmedia.es](https://wmedia.es/en/tips/claude-code-background-agents-status-cost): one-session `--debug-file`
+  measurement (~50k input tokens for 14 output tokens on the old path)
+- [flamerix-ai gist](https://gist.github.com/flamerix-ai/c3905705cc4205e5de3011fa2e74efce): 16.4% of one team's
+  spend, as cited by bestagent.dev
+- [Hacker News thread](https://news.ycombinator.com/item?id=50284255): a reported reply from an Anthropic engineer,
+  as cited by bestagent.dev
+
+Tools: each tool's own README or page, linked in the table above. The usage and cost rows were written earlier and
+were not re-checked on 2026-11-13.
+
+</details>
 
 ## Install
 
@@ -164,7 +253,7 @@ uv run moni-token map          # http://127.0.0.1:4990/
 
 <sub>This repository's own map during development:
 - a running subagent (general-purpose) with its progress forecast;
-- the main agent marked "progress forecast: not supported for main";
+- the main agent marked "Progress forecast: not for main";
 - edited files in red, each touched file with its token cost.</sub>
 
 Shows where each agent (main session and subagents) is working right now:
@@ -172,9 +261,9 @@ Shows where each agent (main session and subagents) is working right now:
 - **Agent timeline**: one row per agent over the selected period, one mark per tool call, coloured by kind
   (read / edit / run / web / subagent / MCP). Click a mark to jump to its file in the tree. Grid lines sit on round
   clock times (every 5 / 15 / 30 min), so they slide with the marks; a mark's tooltip gives its time to the second.
-- **Pause**: the `⏸ 일시정지` button (or the space bar) freezes every panel at the current moment; hover, click-to-tree,
-  search, period and project changes keep working on that moment, ◀ ▶ step by one minute, and `이 시점 링크` links to
-  it (`?at=…&project=…&window=…`). `▶ 실시간` returns to live. `?paused=1` opens the map already paused.
+- **Pause**: the `⏸ Pause` button (or the space bar) freezes every panel at the current moment; hover, click-to-tree,
+  search, period and project changes keep working on that moment, ◀ ▶ step by one minute, and `Link to this moment`
+  links to it (`?at=…&project=…&window=…`). `▶ Live` returns to live. `?paused=1` opens the map already paused.
 - **Source tree**: the real directory tree. Files an agent read or edited in the period are bold (red when edited),
   a bar shows how often each file or folder was touched, and a ringed dot marks where each running agent is now.
   Large folders are cut at 200 entries; touched files always show. A search box filters the tree.
@@ -197,7 +286,7 @@ fell within P85 and 59% within P50 — slightly wide, on the safe side.
 
 The same server also serves the usage page at **http://127.0.0.1:4990/usage**, built from live data. Both pages share
 a top line with the current 5-hour and weekly limit % and the live spike warning. Every spike on the usage page has a
-**"그때 지도" (map at that time)** link that opens the map at the spike's end, on its top project; on the map, each agent and
+**"Map at that time"** link that opens the map at the spike's end, on its top project; on the map, each agent and
 project shows its share of the current 5-hour window (≈ %p via calibration, labelled as an estimate).
 
 **Is this usage normal?**
@@ -261,12 +350,12 @@ single_call_cache_write_tokens = 200000   # one call re-caching this much is a s
 ## Try it without your own data
 
 ```powershell
-uv run python scripts/demo_report.py demo
+uv run python scripts/demo_report.py demo --lang en
 start demo\report.html
 ```
 
-This writes fake logs with all the patterns above and builds a report from them. The screenshots in this README come
-from it.
+This writes fake logs with all the patterns above and builds a report from them (`--lang ko` for Korean). The
+dashboard screenshots in this README come from it.
 
 ## Limitations
 
@@ -289,6 +378,22 @@ uv run pytest
 ```
 
 Design notes are in `docs/adr/`. A test checks that the package never imports an LLM client.
+
+## Adding a language
+
+Every user-facing string comes from a message catalog: one JSON file per language in `src/moni_token/locales/`
+(`en.json`, `ko.json`). Nothing is translated at runtime.
+
+1. Copy `en.json` to `<code>.json`, e.g. `ja.json`, and translate the values. Keep the keys and every `{placeholder}`
+   exactly as they are; format specs such as `{share:.0%}` stay too. Keys that start with `p.` are page strings.
+   Their placeholders are plain `{name}`, and `p.locale` is the locale used for dates and numbers, e.g. `ja-JP`.
+2. Add the language's own name to `NATIVE` in `src/moni_token/i18n.py`. The language toggle shows that name.
+3. Run `uv run pytest`. `tests/test_i18n.py` fails if a key or a placeholder is missing.
+
+The language is chosen in this order: `--lang` on the CLI or `?lang=` on a page, then `lang = "<code>"` in
+`~/.moni_token/config.toml`, then the OS locale, then English. The toggle in the page header switches between Korean
+and English and remembers the choice in the browser. Events recorded earlier are shown in the current language too,
+because each one keeps its template keys and numbers.
 
 ## License
 

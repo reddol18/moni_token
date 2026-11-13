@@ -1,19 +1,24 @@
 """Build a demo report from synthetic logs (for the README screenshot). No real data is read.
 
-    uv run python scripts/demo_report.py OUT_DIR
+    uv run python scripts/demo_report.py OUT_DIR [--lang en|ko]
 
 Writes OUT_DIR/projects/** (fake Claude Code logs), OUT_DIR/home/usage.db and OUT_DIR/report.html.
 The scenario contains the patterns moni_token explains: a long conversation with many tool calls,
 a large session resumed after a long idle gap (cache rewrite), parallel sessions, and big tool results.
+The report language is --lang, else the MONI_TOKEN_LANG environment variable, else English.
 """
+import argparse
 import json
 import os
 import random
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "demo").resolve()
+_ap = argparse.ArgumentParser()
+_ap.add_argument("out", nargs="?", default="demo")
+_ap.add_argument("--lang", default=os.environ.get("MONI_TOKEN_LANG", "en"))
+ARGS = _ap.parse_args()
+OUT = Path(ARGS.out).resolve()
 os.environ["MONI_TOKEN_HOME"] = str(OUT / "home")
 os.environ["MONI_TOKEN_PROJECTS"] = str(OUT / "projects")
 
@@ -23,6 +28,7 @@ from moni_token.calibrate import ingest_statusline, usd_between  # noqa: E402
 from moni_token.collector import collect  # noqa: E402
 from moni_token.db import connect  # noqa: E402
 from moni_token.events import record_spike  # noqa: E402
+from moni_token.i18n import resolve_lang  # noqa: E402
 from moni_token.report import write_report  # noqa: E402
 from moni_token.settings import SpikeParams  # noqa: E402
 from moni_token.spikes import detect  # noqa: E402
@@ -177,9 +183,10 @@ def main() -> None:
     con = connect(config.db_path())
     collect(con, config.claude_projects_dir())
     statusline(con)
+    lang = resolve_lang(ARGS.lang)
     for s in detect(con, ms(NOW - timedelta(days=3)), ms(NOW), SpikeParams()):
-        record_spike(con, s, ms(NOW))
-    print(write_report(con, OUT / "report.html", now_ms=ms(NOW), days=3))
+        record_spike(con, s, ms(NOW), lang=lang)
+    print(write_report(con, OUT / "report.html", now_ms=ms(NOW), days=3, lang=lang))
 
 
 if __name__ == "__main__":

@@ -72,7 +72,7 @@ def test_check_writes_live_warning_for_a_fresh_spike(home, logs, tmp_path, monke
     iso = __import__("test_m2").iso
     logs.write(logs.path(), logs.human(iso(now - 3 * M)),
                logs.assistant("m1", iso(now - 2 * M), tools=["Read"], c1=600_000))   # one call re-caches 600k
-    assert main(["--db", str(tmp_path / "x.db"), "--projects", str(logs.root), "check"]) == 0
+    assert main(["--db", str(tmp_path / "x.db"), "--projects", str(logs.root), "--lang", "ko", "check"]) == 0
     w = json.loads((home / "spike_now.json").read_text(encoding="utf-8"))
     assert w["text"].startswith("⚠ 캐시 재기록") and w["until_ms"] > now
 

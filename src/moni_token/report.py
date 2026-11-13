@@ -11,13 +11,15 @@ import time
 from pathlib import Path
 
 from . import config
+from .analysis import localize_cause, localize_headline
 from .baseline import baseline
 from .calibrate import estimate
 from .chunks import analyze_chunks
 from .events import list_events
+from .i18n import t
 from .summary import _pp, best_alternative, digest, event_summary
 from .pctseries import pct_at, series
-from .ui import head, shell_html, uplot_js
+from .ui import fill, head, shell_html, uplot_js
 
 DAY = 86_400_000
 MAX_TIMELINE_CALLS = 400
@@ -50,20 +52,23 @@ def _timeline(con, names, start_ms, end_ms) -> list[dict]:
     return calls
 
 
-def report_events(con: sqlite3.Connection, since_ms: int, with_calls: bool = False) -> list[dict]:
-    """Recorded events, flattened for display, each with its savings summary sentence."""
+def report_events(con: sqlite3.Connection, since_ms: int, with_calls: bool = False, lang: str = "ko") -> list[dict]:
+    """Recorded events, flattened for display in `lang`, each with its savings summary sentence.
+    Sentences are re-rendered from the stored template keys and numbers (issue #12)."""
     names = _names(con) if with_calls else {}
     ratio = estimate(con, "five_hour")["usd_per_pct"]
     events = []
     for e in list_events(con, since_ms):
         ev = (e["spike"] or {}).get("evidence", {})
+        causes = [localize_cause(c, lang) for c in e["causes"]]
         d = dict(id=e["id"], kind=e["kind"], start=e["start_ms"], end=e["end_ms"],
                  rise=ev.get("rise_pp"), frm=ev.get("from_pct"), to=ev.get("to_pct"), basis=ev.get("basis"),
-                 headline=e["headline"], note=e["note"], agents=e["agents"],
+                 headline=localize_headline(e["usd"], causes, lang),
+                 note=t("analysis.note", lang) if e["note"] else e["note"], agents=e["agents"],
                  causes=[{k: c.get(k) for k in ("label", "fact_text", "interpretation", "advice", "share",
-                                                "saving_usd", "saving_share", "alternative")} for c in e["causes"]],
+                                                "saving_usd", "saving_share", "alternative")} for c in causes],
                  calls=_timeline(con, names, e["start_ms"], e["end_ms"]) if with_calls else [])
-        d["summary"] = event_summary(d, ratio)
+        d["summary"] = event_summary(d, ratio, lang)
         b = best_alternative(d)
         pp = _pp(d, b, ratio) if b else None
         d["save_pp"] = round(pp, 2) if pp is not None else None
@@ -74,7 +79,7 @@ def report_events(con: sqlite3.Connection, since_ms: int, with_calls: bool = Fal
 MAP_BASE = "http://127.0.0.1:4990"   # where spike rows link to; "" when the page is served by the map server
 
 
-def header(con: sqlite3.Connection, now_ms: int, live: bool = True) -> dict:
+def header(con: sqlite3.Connection, now_ms: int, live: bool = True, lang: str = "ko") -> dict:
     """Shared top line of the usage page and the agent map (issue #4): limit % now and the live spike warning."""
     from .statusline import warning
     out = {}
@@ -83,38 +88,39 @@ def header(con: sqlite3.Connection, now_ms: int, live: bool = True) -> dict:
         cur, basis = pct_at(s, now_ms)
         win = next((w for w in s["windows"] if w[0] <= now_ms < w[1]), None)
         out[kind] = dict(pct=cur, basis=basis, reset=win[1] if win else None)
-    out["warning"] = warning(now_ms) if live else ""
+    out["warning"] = warning(now_ms, lang) if live else ""
     return out
 
 
-def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7) -> dict:
+def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7, lang: str = "ko") -> dict:
     start = now_ms - days * DAY
     packs = {}
     for kind in ("five_hour", "seven_day"):
         s = series(con, kind, start, now_ms)
         packs[kind] = dict(_pack(s, now_ms), base=baseline(con, kind, s, now_ms))   # issue #8
     fh, sd = packs["five_hour"], packs["seven_day"]
-    events = report_events(con, start, with_calls=True)
+    events = report_events(con, start, with_calls=True, lang=lang)
     main = [e for e in events if e["kind"] == "pct"] or [e for e in events if e["kind"] == "rate"]
-    dg = digest(main, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"])
-    ch = analyze_chunks(con, start, now_ms)
+    dg = digest(main, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"], lang)
+    ch = analyze_chunks(con, start, now_ms, lang=lang)
     try:
         seen = json.loads((config.data_dir() / "statusline.seen").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         seen = None
     return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen,
-                digest=dg, chunks=ch, header=header(con, now_ms))
+                digest=dg, chunks=ch, header=header(con, now_ms, lang=lang))
 
 
-def render(data: dict, map_base: str = MAP_BASE) -> str:
+def render(data: dict, map_base: str = MAP_BASE, lang: str = "ko") -> str:
     payload = json.dumps(dict(data, map_base=map_base), ensure_ascii=False).replace("</", "<\\/")
-    return (TEMPLATE.replace("/*HEAD*/", head("moni_token 사용량", USAGE_CSS))
-            .replace("/*SHELL*/", shell_html("usage", map_base)).replace("/*UPLOT*/", uplot_js())
+    return (fill(TEMPLATE, lang).replace("/*HEAD*/", head(t("p.title.usage", lang), USAGE_CSS, lang))
+            .replace("/*SHELL*/", shell_html("usage", map_base, lang)).replace("/*UPLOT*/", uplot_js())
             .replace("/*DATA*/null", payload))
 
 
-def write_report(con: sqlite3.Connection, out: Path, now_ms: int | None = None, days: int = 7) -> Path:
-    html = render(build_data(con, now_ms or int(time.time() * 1000), days))
+def write_report(con: sqlite3.Connection, out: Path, now_ms: int | None = None, days: int = 7,
+                 lang: str = "ko") -> Path:
+    html = render(build_data(con, now_ms or int(time.time() * 1000), days, lang), lang=lang)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.write_text(html, encoding="utf-8")
@@ -157,24 +163,24 @@ details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.t
 """
 
 TEMPLATE = r"""/*HEAD*/<body>/*SHELL*/<main>
-<h1>Claude 한도 사용률 · 급상승 원인</h1>
+<h1>[[p.u.h1]]</h1>
 <p class="sub" id="gen"></p>
 <div class="tiles" id="tiles"></div>
-<h2>절약 요약 (최근 7일)</h2>
+<h2>[[p.u.h_digest]]</h2>
 <div class="card" id="digest"></div>
-<h2>큰 덩어리 전달 (최근 7일)</h2>
+<h2>[[p.u.h_chunks]]</h2>
 <div class="card scroll" id="chunks"></div>
-<h2>현재 세션 (5시간 한도)<span class="vd" id="v5"></span><span class="range" id="r5"></span></h2>
-<div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정(로그 ÷ 보정)</span>
-<span><i class="ln u"></i> 평소(P50)</span><span><i class="bandu"></i> 평소 범위(P25~P75)</span><span><i class="ln lw"></i> 지난주 같은 시각</span>
-<span><i class="bandk"></i> 급상승 사건</span><span id="cal5"></span></div><div class="pace" id="p5"></div><div class="chart" id="c5"></div></div>
-<h2>이번 주 (7일 한도)<span class="vd" id="v7"></span></h2>
-<div class="card"><div class="legend"><span><i class="ln"></i> 실측(상태줄)</span><span><i class="ln d"></i> 추정</span>
-<span><i class="ln u"></i> 평균 주(P50)</span><span><i class="bandu"></i> 평소 범위(P25~P75)</span><span><i class="ln lw"></i> 지난주</span>
+<h2>[[p.u.h_5h]]<span class="vd" id="v5"></span><span class="range" id="r5"></span></h2>
+<div class="card"><div class="legend"><span><i class="ln"></i> [[p.u.lg_measured]]</span><span><i class="ln d"></i> [[p.u.lg_est_calib]]</span>
+<span><i class="ln u"></i> [[p.u.lg_usual]]</span><span><i class="bandu"></i> [[p.u.lg_band]]</span><span><i class="ln lw"></i> [[p.u.lg_lastweek_same]]</span>
+<span><i class="bandk"></i> [[p.u.lg_spikes]]</span><span id="cal5"></span></div><div class="pace" id="p5"></div><div class="chart" id="c5"></div></div>
+<h2>[[p.u.h_7d]]<span class="vd" id="v7"></span></h2>
+<div class="card"><div class="legend"><span><i class="ln"></i> [[p.u.lg_measured]]</span><span><i class="ln d"></i> [[p.u.lg_est]]</span>
+<span><i class="ln u"></i> [[p.u.lg_avg_week]]</span><span><i class="bandu"></i> [[p.u.lg_band]]</span><span><i class="ln lw"></i> [[p.u.lg_lastweek]]</span>
 <span id="cal7"></span></div><div class="pace" id="p7"></div><div class="chart" id="c7"></div></div>
-<h2>급상승 사건</h2>
-<div class="card scroll"><table id="events"><thead><tr><th>시각</th><th>상승</th><th>주 원인</th><th class="n">절약 가능</th><th>에이전트 점유율</th><th>지도</th></tr></thead><tbody></tbody></table>
-<p class="note">행을 누르면 에이전트(프로젝트)별 점유율, 원인 근거, 그 구간의 호출 타임라인이 열립니다. 점유율은 구간 안 로컬 로그 사용량(토큰 종류별 가중) 기준이며 해석은 규칙에 따른 추정입니다.</p></div>
+<h2>[[p.u.h_events]]</h2>
+<div class="card scroll"><table id="events"><thead><tr><th>[[p.u.th_time]]</th><th>[[p.u.th_rise]]</th><th>[[p.u.th_cause]]</th><th class="n">[[p.u.th_save]]</th><th>[[p.u.th_share]]</th><th>[[p.u.th_map]]</th></tr></thead><tbody></tbody></table>
+<p class="note">[[p.u.events_note]]</p></div>
 </main>
 <script id="data" type="application/json">/*DATA*/null</script>
 <script>/*UPLOT*/</script>
@@ -182,42 +188,41 @@ TEMPLATE = r"""/*HEAD*/<body>/*SHELL*/<main>
 const D=JSON.parse(document.getElementById('data').textContent);
 const $=s=>document.querySelector(s), el=(t,a={},h='')=>{const e=document.createElement(t);for(const k in a)e.setAttribute(k,a[k]);e.innerHTML=h;return e};
 const pad=n=>String(n).padStart(2,'0');
-const fmt=ms=>{const d=new Date(ms);return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`};
-const hm=ms=>{const d=new Date(ms);return `${pad(d.getHours())}:${pad(d.getMinutes())}`};
+const fmt=fmtDT,hm=fmtHM;
 const pc=v=>v==null?'—':(v<10?v.toFixed(1):Math.round(v))+'%';
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const PAL=['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(--s6)','var(--s7)'];
 const projColor={};let pi=0;const colorOf=p=>projColor[p]??=(pi<PAL.length?PAL[pi++]:'var(--muted)');
-const BASIS={measured:'실측',estimated:'추정',none:'데이터 없음'};
-const SL=D.statusline, slTxt=!SL?'상태줄 기록기: 아직 호출된 적 없음 (Claude Code를 새로 시작하면 연결됨)':
- SL.has_five_hour?`상태줄 실측 수신 중 (마지막 ${fmt(SL.ts_ms)})`:`상태줄은 호출되지만 한도 % 정보가 오지 않음 (마지막 ${fmt(SL.ts_ms)})`;
-$('#gen').textContent=`${fmt(D.start)} ~ ${fmt(D.end)} · 생성 ${fmt(D.generated)} · LLM 호출 없음 · ${slTxt}`;
+const BASIS={measured:T('p.basis.measured'),estimated:T('p.basis.estimated'),none:T('p.basis.none')};
+const SL=D.statusline, slTxt=!SL?T('p.u.sl_never'):
+ SL.has_five_hour?T('p.u.sl_ok',{t:fmt(SL.ts_ms)}):T('p.u.sl_nopct',{t:fmt(SL.ts_ms)});
+$('#gen').textContent=T('p.u.gen',{from:fmt(D.start),to:fmt(D.end),gen:fmt(D.generated),sl:slTxt});
 
 // tiles
 const F=D.five_hour,W=D.seven_day,ev24=D.events.filter(e=>e.end>=D.end-86400000&&e.kind==='pct');
 function tile(k,v,basis,d){const w=v==null?0:Math.min(100,v);
  return `<div class="tile"><div class="k">${k} <span class="badge">${BASIS[basis]||''}</span></div><div class="v">${pc(v)}</div>
  <div class="meter"><i style="width:${w}%"></i></div><div class="d">${esc(d)}</div></div>`}
-$('#tiles').innerHTML=tile('현재 세션 (5시간)',F.current,F.basis,F.reset?`초기화 ${fmt(F.reset)}`:'')+
- tile('이번 주 (7일)',W.current,W.basis,W.reset?`초기화 ${fmt(W.reset)}`:(W.current==null?'상태줄 실측이 쌓이면 표시':''))+
- `<div class="tile"><div class="k">최근 24시간 급상승</div><div class="v">${ev24.length}</div><div class="d">${esc(ev24.at(-1)?.headline||'')}</div></div>`;
-const calTxt=s=>s.reliable?`보정 표본 ${s.calib_n}건`:`보정 표본 ${s.calib_n||0}건 · 3건부터 추정선 표시`;
+$('#tiles').innerHTML=tile(T('p.u.tile_5h'),F.current,F.basis,F.reset?T('p.reset',{t:fmt(F.reset)}):'')+
+ tile(T('p.u.tile_7d'),W.current,W.basis,W.reset?T('p.reset',{t:fmt(W.reset)}):(W.current==null?T('p.u.tile_7d_wait'):''))+
+ `<div class="tile"><div class="k">${T('p.u.tile_24h')}</div><div class="v">${ev24.length}</div><div class="d">${esc(ev24.at(-1)?.headline||'')}</div></div>`;
+const calTxt=s=>s.reliable?T('p.u.cal',{n:s.calib_n}):T('p.u.cal_few',{n:s.calib_n||0});
 $('#cal5').textContent=calTxt(F);$('#cal7').textContent=calTxt(W);
 
 const sec=ms=>ms/1000;
 const rgba=(c,a)=>{const h=/^#([0-9a-f]{6})$/i.exec(c);if(!h)return `rgba(128,128,128,${a})`;const n=parseInt(h[1],16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`};
 // issue #8: is the current usage high for this point of the window? (statistics of earlier windows)
-const dur=ms=>{const m=Math.round(ms/60000);return m<60?m+'분':m<1440?Math.floor(m/60)+'시간 '+(m%60)+'분':Math.floor(m/1440)+'일 '+Math.floor(m%1440/60)+'시간'};
+const dur=ms=>{const m=Math.round(ms/60000);return m<60?T('p.dur.m',{m}):m<1440?T('p.dur.hm',{h:Math.floor(m/60),m:m%60}):T('p.dur.dh',{d:Math.floor(m/1440),h:Math.floor(m%1440/60)})};
 function verdict(id,pid,S,word){const B=S.base;if(!B)return;const N=B.now||{};
- const VD={high:['▲ 높음','high'],normal:['● 보통','normal'],low:['▼ 낮음','low']}[B.verdict];
- $(id).innerHTML=VD?`<span class="st ${VD[1]}">${VD[0]}</span>지금 <b>${pc(N.cur)}</b> · 평소 ${word} ${dur(N.offset_ms)} 시점 ${pc(N.p50)} (P25~P75 ${pc(N.p25)}~${pc(N.p75)}) · 과거 ${N.n}개 구간`:
-  N.offset_ms==null?'<span class="st">—</span>지금 진행 중인 구간 없음':`<span class="st">기록 부족</span>평소와 비교할 과거 구간 ${N.n||0}개 (5개부터)`;
- const P=B.pace;$(pid).innerHTML=P?`지금 속도(시간당 +${P.per_hour}%p)면 초기화 때 약 <b>${pc(P.at_reset)}</b>`+(P.full_ms?` · <span class="warn">⚠ ${fmt(P.full_ms)}쯤 100% 도달 예상</span>`:'')+' <span class="badge">추정</span>':''}
+ const VD={high:[T('p.u.vd_high'),'high'],normal:[T('p.u.vd_normal'),'normal'],low:[T('p.u.vd_low'),'low']}[B.verdict];
+ $(id).innerHTML=VD?`<span class="st ${VD[1]}">${VD[0]}</span>`+T('p.u.vd_now',{cur:`<b>${pc(N.cur)}</b>`,word,off:dur(N.offset_ms),p50:pc(N.p50),p25:pc(N.p25),p75:pc(N.p75),n:N.n}):
+  N.offset_ms==null?'<span class="st">—</span>'+T('p.u.vd_none'):`<span class="st">${T('p.u.vd_few')}</span>`+T('p.u.vd_few_n',{n:N.n||0});
+ const P=B.pace;$(pid).innerHTML=P?T('p.u.pace',{r:P.per_hour,v:`<b>${pc(P.at_reset)}</b>`})+(P.full_ms?` · <span class="warn">${T('p.u.pace_full',{t:fmt(P.full_ms)})}</span>`:'')+` <span class="badge">${T('p.est')}</span>`:''}
 function chart(boxId,S,from,events){
  const box=$(boxId);box.innerHTML='';const xs=[],m=[],e=[],b50=[],b75=[],b25=[],lw=[],B=S.base||{};
  S.m.forEach((v,i)=>{const t=S.t0+i*S.step;if(t<from)return;xs.push(sec(t));m.push(v);e.push(S.e[i]);
   b50.push(B.p50?.[i]??null);b75.push(B.p75?.[i]??null);b25.push(B.p25?.[i]??null);lw.push(B.last_week?.[i]??null)});
- if(!m.some(v=>v!=null)&&!e.some(v=>v!=null)){box.innerHTML='<div class="empty">아직 표시할 % 데이터가 없습니다 (상태줄 실측 또는 보정 표본 필요)</div>';return}
+ if(!m.some(v=>v!=null)&&!e.some(v=>v!=null)){box.innerHTML=`<div class="empty">${T('p.u.chart_empty')}</div>`;return}
  const line=cssVar('--line'),grid=cssVar('--grid'),muted=cssVar('--muted'),band=cssVar('--band'),crit=cssVar('--critical');
  const evs=(events||[]).filter(x=>x.end>=from);
  const bands=u=>{const c=u.ctx,{top,height}=u.bbox;c.save();
@@ -229,59 +234,59 @@ function chart(boxId,S,from,events){
  const u=new uPlot({width:box.clientWidth,height:240,cursor:{sync:{key:'moni'},drag:{x:true,y:false}},
   scales:{x:{time:true},y:{range:[0,100]}},legend:{live:true},
   axes:[{stroke:muted,grid:{stroke:grid,width:1},ticks:{stroke:grid},values:(u,t)=>t.map(v=>{const d=new Date(v*1000);
-    return d.getHours()===0&&d.getMinutes()===0?`${d.getMonth()+1}/${d.getDate()}`:hm(v*1000)})},{stroke:muted,grid:{stroke:grid,width:1},ticks:{show:false},values:(u,t)=>t.map(v=>v+'%'),size:44}],
-  series:[{label:'시각',value:(u,v)=>v==null?'—':fmt(v*1000)},
-   {label:'실측(상태줄)',stroke:line,width:2,value:fmtV,spanGaps:false},
-   {label:'추정',stroke:line,width:1.5,dash:[4,3],alpha:.8,value:fmtV,spanGaps:false},
-   {label:'평소 P50',stroke:muted,width:1.5,value:fmtV,spanGaps:false},
+    return d.getHours()===0&&d.getMinutes()===0?fmtMD(v*1000):hm(v*1000)})},{stroke:muted,grid:{stroke:grid,width:1},ticks:{show:false},values:(u,t)=>t.map(v=>v+'%'),size:44}],
+  series:[{label:T('p.u.s_time'),value:(u,v)=>v==null?'—':fmt(v*1000)},
+   {label:T('p.u.lg_measured'),stroke:line,width:2,value:fmtV,spanGaps:false},
+   {label:T('p.u.lg_est'),stroke:line,width:1.5,dash:[4,3],alpha:.8,value:fmtV,spanGaps:false},
+   {label:T('p.u.s_usual'),stroke:muted,width:1.5,value:fmtV,spanGaps:false},
    {label:'P75',stroke:'transparent',width:0,value:fmtV,spanGaps:false},
    {label:'P25',stroke:'transparent',width:0,value:fmtV,spanGaps:false},
-   {label:'지난주',stroke:cssVar('--s2'),width:1.5,alpha:.9,value:fmtV,spanGaps:false}],
+   {label:T('p.u.lg_lastweek'),stroke:cssVar('--s2'),width:1.5,alpha:.9,value:fmtV,spanGaps:false}],
   bands:[{series:[4,5],fill:rgba(muted,.18)}],
   hooks:{drawClear:[bands]}},[xs,m,e,b50,b75,b25,lw],box);
  u.over.addEventListener('click',ev=>{if(u.select.width>2)return;const t=u.posToVal(ev.offsetX,'x')*1000,hit=evs.find(x=>x.start<=t&&t<=x.end);if(hit)openEvent(hit.id,true)});
- u.over.title='끌어서 확대 · 더블클릭으로 원래대로 · 빨간 띠를 누르면 사건 상세';
+ u.over.title=T('p.u.chart_tip');
 }
-const RANGES=[['24시간',86400000],['3일',3*86400000],['7일',7*86400000]];let r5=86400000;
+const RANGES=[[T('p.u.r24h'),86400000],[T('p.u.r3d'),3*86400000],[T('p.u.r7d'),7*86400000]];let r5=86400000;
 RANGES.forEach(([k,v])=>{const b=el('button',{'aria-pressed':v===r5},k);b.onclick=()=>{r5=v;$('#r5').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b));draw()};$('#r5').append(b)});
 const pctEvents=D.events.filter(e=>e.kind==='pct'||e.kind==='cache_write');
 function draw(){chart('#c5',F,D.end-r5,pctEvents);chart('#c7',W,D.start,null)}
-verdict('#v5','#p5',F,'이 구간');verdict('#v7','#p7',W,'이번 주');
+verdict('#v5','#p5',F,T('p.u.word_5h'));verdict('#v7','#p7',W,T('p.u.word_7d'));
 addEventListener('themechange',draw);
 
-const G=D.digest;$('#digest').innerHTML=`<p style="margin:0 0 8px">${esc(G.headline)}</p>`+(G.items.length?'<table class="tl"><tr><th>원인</th><th class="n">사건</th><th class="n">절약 가능</th><th>대안</th></tr>'+G.items.map(d=>`<tr><td>${esc(d.label)}</td><td class="n">${d.events}</td><td class="n">≈ ${d.pp.toFixed(1)}%p</td><td>${esc(d.advice)}<div class="note">${esc(d.alternative)}</div></td></tr>`).join('')+'</table>':'');
+const G=D.digest;$('#digest').innerHTML=`<p style="margin:0 0 8px">${esc(G.headline)}</p>`+(G.items.length?`<table class="tl"><tr><th>${T('p.u.dg_cause')}</th><th class="n">${T('p.u.dg_events')}</th><th class="n">${T('p.u.th_save')}</th><th>${T('p.u.dg_alt')}</th></tr>`+G.items.map(d=>`<tr><td>${esc(d.label)}</td><td class="n">${d.events}</td><td class="n">≈ ${d.pp.toFixed(1)}%p</td><td>${esc(d.advice)}<div class="note">${esc(d.alternative)}</div></td></tr>`).join('')+'</table>':'');
 
-const C=D.chunks,CO=C.overall;$('#chunks').innerHTML=`<p style="margin:0 0 8px">도구 결과가 결론이 아니라 ${C.min_tokens.toLocaleString()}토큰 이상 덩어리로 전달된 경우: ${CO.chunks}건, 끌고 다닌 양이 전체 토큰의 <b>${(CO.token_share*100).toFixed(1)}%</b> (비용 가중 ${(CO.cost_share*100).toFixed(1)}%)</p>`+
- '<table class="tl"><tr><th>에이전트</th><th class="n">호출</th><th class="n">덩어리</th><th class="n">100호출당</th><th class="n">중앙값(토큰)</th><th class="n">토큰 비중</th><th class="n">비용 비중</th><th>주된 출처</th></tr>'+
- C.agents.filter(g=>g.chunks).map(g=>`<tr><td><span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)}</td><td class="n">${g.calls}</td><td class="n">${g.chunks}</td><td class="n">${g.per_100_calls}</td><td class="n">${g.median_chunk.toLocaleString()}</td><td class="n">${(g.token_share*100).toFixed(1)}%</td><td class="n">${(g.cost_share*100).toFixed(1)}%</td><td>${g.categories.slice(0,3).map(c=>esc(c.category)+' '+c.chunks+'건').join(', ')}</td></tr>`).join('')+'</table><p class="note">크기는 받은 호출의 컨텍스트 증가분으로 잰 실측 토큰. 끌고 다닌 양 = 크기 × (1 + 같은 대화에서 이후 호출 수, compact 전까지). 비용 비중은 캐시 쓰기 1.25~2배·읽기 0.1배 가중.</p>';
+const C=D.chunks,CO=C.overall;$('#chunks').innerHTML=`<p style="margin:0 0 8px">${T('p.u.ch_head',{min:fmtN(C.min_tokens),n:CO.chunks,tok:`<b>${(CO.token_share*100).toFixed(1)}%</b>`,cost:(CO.cost_share*100).toFixed(1)+'%'})}</p>`+
+ `<table class="tl"><tr><th>${T('p.u.ch_agent')}</th><th class="n">${T('p.u.ch_calls')}</th><th class="n">${T('p.u.ch_chunks')}</th><th class="n">${T('p.u.ch_per100')}</th><th class="n">${T('p.u.ch_median')}</th><th class="n">${T('p.u.ch_tok')}</th><th class="n">${T('p.u.ch_cost')}</th><th>${T('p.u.ch_src')}</th></tr>`+
+ C.agents.filter(g=>g.chunks).map(g=>`<tr><td><span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)}</td><td class="n">${g.calls}</td><td class="n">${g.chunks}</td><td class="n">${g.per_100_calls}</td><td class="n">${fmtN(g.median_chunk)}</td><td class="n">${(g.token_share*100).toFixed(1)}%</td><td class="n">${(g.cost_share*100).toFixed(1)}%</td><td>${g.categories.slice(0,3).map(c=>T('p.u.cat_n',{cat:esc(c.category),n:c.chunks})).join(', ')}</td></tr>`).join('')+`</table><p class="note">${T('p.u.ch_note')}</p>`;
 
 // shared header and links to the agent map (issue #4)
 const MB=D.map_base??'',H=D.header||{};
-const mapUrl=e=>`${MB}/?at=${e.end}&window=${Math.max(15,Math.ceil((e.end-e.start)/60000)+5)}`+(e.agents[0]?`&project=${encodeURIComponent(e.agents[0].project)}`:'');
-$('#lim').innerHTML=shellLimits(H);$('#meta').textContent='LLM 호출 없음 · 로컬 전용';
+const mapUrl=e=>`${MB}/?at=${e.end}&window=${Math.max(15,Math.ceil((e.end-e.start)/60000)+5)}`+(e.agents[0]?`&project=${encodeURIComponent(e.agents[0].project)}`:'')+`&lang=${LANG}`;
+$('#lim').innerHTML=shellLimits(H);$('#meta').textContent=T('p.meta');
 
 // events
 const tb=$('#events tbody');
 const shareBar=a=>`<div class="share">${a.map(g=>`<i title="${esc(g.project)} ${Math.round(g.share*100)}%" style="width:${g.share*100}%;background:${colorOf(g.project)}"></i>`).join('')}</div>`;
 for(const e of [...D.events].reverse()){
- const rise=e.kind==='pct'?`<b>+${e.rise}%p</b> ${pc(e.frm)}→${pc(e.to)}${e.basis==='estimated'?' <span class="badge">추정</span>':''}`:e.kind==='cache_write'?'캐시 재기록':e.kind==='rate'?'사용량 급증':'지정 구간';
+ const rise=e.kind==='pct'?`<b>+${e.rise}%p</b> ${pc(e.frm)}→${pc(e.to)}${e.basis==='estimated'?` <span class="badge">${T('p.est')}</span>`:''}`:e.kind==='cache_write'?T('p.u.k_cw'):e.kind==='rate'?T('p.u.k_rate'):T('p.u.k_manual');
  const top=e.agents.slice(0,3).map(g=>`<span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)} ${Math.round(g.share*100)}%`).join(' &nbsp;');
- const tr=el('tr',{class:'ev',tabindex:'0','data-id':e.id},`<td>${fmt(e.start)}~${hm(e.end)}</td><td>${rise}</td><td>${esc(e.causes[0]?.label||'규칙에 맞는 원인 없음')}</td><td class="n">${e.save_pp!=null&&e.save_pp>=0.05?'≈ '+e.save_pp.toFixed(1)+'%p':'—'}</td><td>${top}</td><td><a class="maplink" href="${mapUrl(e)}">그때 지도</a></td>`);
+ const tr=el('tr',{class:'ev',tabindex:'0','data-id':e.id},`<td>${fmt(e.start)}~${hm(e.end)}</td><td>${rise}</td><td>${esc(e.causes[0]?.label||T('p.u.no_cause'))}</td><td class="n">${e.save_pp!=null&&e.save_pp>=0.05?'≈ '+e.save_pp.toFixed(1)+'%p':'—'}</td><td>${top}</td><td><a class="maplink" href="${mapUrl(e)}">${T('p.u.map_then')}</a></td>`);
  tr.querySelector('.maplink').onclick=ev=>ev.stopPropagation();
  tr.onclick=()=>openEvent(e.id);tr.onkeydown=k=>{if(k.key==='Enter')openEvent(e.id)};tb.append(tr)}
 function openEvent(id,scroll){
  const tr=tb.querySelector(`tr[data-id="${id}"]`);if(!tr)return;const nx=tr.nextElementSibling;
  if(nx&&nx.classList.contains('detail')){nx.remove();return}
  const e=D.events.find(x=>x.id===id);
- let h=`<div class="cause"><b>절약 요약</b><div>${esc(e.summary)}</div></div><b>에이전트별 점유율</b>${shareBar(e.agents)}<table class="tl"><tr><th>에이전트(프로젝트)</th><th class="n">점유율</th>${e.rise?'<th class="n">≈ 기여 %p</th>':''}<th class="n">호출</th><th class="n">세션</th><th class="n">서브에이전트</th><th class="n">headless</th></tr>`+
+ let h=`<div class="cause"><b>${T('p.u.ev_summary')}</b><div>${esc(e.summary)}</div></div><b>${T('p.u.ev_shares')}</b>${shareBar(e.agents)}<table class="tl"><tr><th>${T('p.u.ev_agent')}</th><th class="n">${T('p.u.ev_share')}</th>${e.rise?`<th class="n">${T('p.u.ev_pp')}</th>`:''}<th class="n">${T('p.u.ch_calls')}</th><th class="n">${T('p.u.session')}</th><th class="n">${T('p.u.ev_sub')}</th><th class="n">headless</th></tr>`+
   e.agents.map(g=>`<tr><td><span class="sw" style="background:${colorOf(g.project)}"></span>${esc(g.project)}</td><td class="n">${Math.round(g.share*100)}%</td>${e.rise?`<td class="n">+${(g.share*e.rise).toFixed(1)}</td>`:''}
   <td class="n">${g.calls}</td><td class="n">${g.sessions}</td><td class="n">${Math.round(g.subagent_share*100)}%</td><td class="n">${Math.round(g.headless_share*100)}%</td></tr>`).join('')+'</table>';
- h+='<div style="margin-top:12px"><b>원인</b></div>'+(e.causes.map(c=>`<div class="cause"><b>${esc(c.label)} · 구간의 ${Math.round((c.share||0)*100)}%</b><div>사실: ${esc(c.fact_text)}</div>
- <div class="interp">해석: ${esc(c.interpretation)}</div><div class="adv">권고: ${esc(c.advice)}</div>${c.alternative?`<div>대안: ${esc(c.alternative)}${c.saving_share?` (구간의 약 ${Math.round(c.saving_share*100)}% 절약)`:''}</div>`:''}</div>`).join('')||'<p>규칙에 맞는 원인 없음</p>');
- h+=`<details><summary>호출 타임라인 (${e.calls.length}건)</summary><div class="scroll"><table class="tl"><tr><th>시각</th><th>에이전트</th><th>세션</th><th class="n">컨텍스트</th><th class="n">캐시 쓰기</th><th class="n">output</th><th>계기</th><th>도구</th></tr>`+
-  e.calls.map(c=>`<tr><td>${hm(c.t)}:${pad(new Date(c.t).getSeconds())}</td><td>${esc(c.p)}${c.sc?' (sub)':''}${c.hl?' (headless)':''}</td><td>${esc(c.s)}</td><td class="n">${c.ctx.toLocaleString()}</td>
-  <td class="n">${c.w?c.w.toLocaleString():''}</td><td class="n">${c.o.toLocaleString()}</td>
-  <td>${c.tr==='human'?'사람 입력':c.tr==='tool_result'?'도구 결과'+(c.rb>=100000?` ${Math.round(c.rb/1024)}KB`:'')+(c.img?' 이미지':''):''}</td><td>${esc(c.tools.join(', '))}</td></tr>`).join('')+'</table></div></details>';
+ h+=`<div style="margin-top:12px"><b>${T('p.u.causes')}</b></div>`+(e.causes.map(c=>`<div class="cause"><b>${esc(c.label)} · ${T('p.u.ev_cshare',{p:Math.round((c.share||0)*100)})}</b><div>${T('p.u.fact')} ${esc(c.fact_text)}</div>
+ <div class="interp">${T('p.u.interp')} ${esc(c.interpretation)}</div><div class="adv">${T('p.u.advice')} ${esc(c.advice)}</div>${c.alternative?`<div>${T('p.u.alt')} ${esc(c.alternative)}${c.saving_share?' '+T('p.u.alt_save',{p:Math.round(c.saving_share*100)}):''}</div>`:''}</div>`).join('')||`<p>${T('p.u.no_cause')}</p>`);
+ h+=`<details><summary>${T('p.u.tl',{n:e.calls.length})}</summary><div class="scroll"><table class="tl"><tr><th>${T('p.u.th_time')}</th><th>${T('p.u.ch_agent')}</th><th>${T('p.u.session')}</th><th class="n">${T('p.u.tl_ctx')}</th><th class="n">${T('p.u.tl_cw')}</th><th class="n">output</th><th>${T('p.u.tl_trig')}</th><th>${T('p.u.tl_tools')}</th></tr>`+
+  e.calls.map(c=>`<tr><td>${fmtHMS(c.t)}</td><td>${esc(c.p)}${c.sc?' (sub)':''}${c.hl?' (headless)':''}</td><td>${esc(c.s)}</td><td class="n">${fmtN(c.ctx)}</td>
+  <td class="n">${c.w?fmtN(c.w):''}</td><td class="n">${fmtN(c.o)}</td>
+  <td>${c.tr==='human'?T('p.u.tr_human'):c.tr==='tool_result'?T('p.u.tr_tool')+(c.rb>=100000?` ${Math.round(c.rb/1024)}KB`:'')+(c.img?' '+T('p.u.tr_img'):''):''}</td><td>${esc(c.tools.join(', '))}</td></tr>`).join('')+'</table></div></details>';
  h+=`<p class="note">${esc(e.note||'')}</p>`;
  const d=el('tr',{class:'detail'},`<td colspan="6">${h}</td>`);tr.after(d);if(scroll)tr.scrollIntoView({behavior:'smooth',block:'center'})}
 draw();addEventListener('resize',()=>{clearTimeout(window._r);window._r=setTimeout(draw,120)});

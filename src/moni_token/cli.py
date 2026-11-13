@@ -17,6 +17,7 @@ from .db import connect
 from .events import list_events, record, record_spike
 from .accuracy import record_live
 from .forecast import backtest, snapshot_checklists
+from .i18n import available, resolve_lang, t
 from .report import report_events, write_report
 from .summary import digest
 from .settings import load_spike_params
@@ -46,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="moni-token")
     ap.add_argument("--db", type=Path, default=None)
     ap.add_argument("--projects", type=Path, default=None, help="Claude Code projects dir (read-only)")
+    ap.add_argument("--lang", help=f"output language ({', '.join(available())}); default: lang in config.toml, "
+                                   "then the OS locale, then en")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("collect", help="incrementally read new log lines into the database")
     p = sub.add_parser("daily", help="token totals per local date")
@@ -103,7 +106,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "map":
         from .mapserver import serve
-        serve(a.db or config.db_path(), a.projects or config.claude_projects_dir(), a.port, a.interval)
+        serve(a.db or config.db_path(), a.projects or config.claude_projects_dir(), a.port, a.interval,
+              resolve_lang(a.lang) if a.lang else None)   # no --lang: each request resolves (and ?lang= wins)
         return 0
 
     if a.cmd in ("install-task", "uninstall-task"):
@@ -113,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         return main_uninstall()
     if a.cmd == "statusline":   # hot path: no database
         from .statusline import main as sl_main
-        return sl_main(["--wrap", a.wrap] if a.wrap else [])
+        return sl_main((["--wrap", a.wrap] if a.wrap else []) + (["--lang", a.lang] if a.lang else []))
+    lang = resolve_lang(a.lang)   # issue #12: --lang > config.toml > OS locale > en
     con = connect(a.db or config.db_path())
     if a.cmd == "collect":
         t0 = time.perf_counter()
@@ -164,15 +169,15 @@ def main(argv: list[str] | None = None) -> int:
         if not con.execute("SELECT 1 FROM events LIMIT 1").fetchone():
             # a schema change rebuilt the DB: recreate past events silently before looking for new ones
             for s in detect(con, first_call_ms(con), now_ms() - 2 * 3_600_000, p):
-                record_spike(con, s, now_ms())
-        for s in check_and_notify(con, now_ms(), p):
-            print(" / ".join(render(s)))
-        write_live(config.live_path(), live_warning(con, now_ms(), p))   # read by the status line
+                record_spike(con, s, now_ms(), lang=lang)
+        for s in check_and_notify(con, now_ms(), p, lang=lang):
+            print(" / ".join(render(s, lang=lang)))
+        write_live(config.live_path(), live_warning(con, now_ms(), p, lang))   # read by the status line
         roots = [r for (r,) in con.execute("SELECT DISTINCT cwd FROM calls WHERE agent_id IS NULL AND cwd IS NOT NULL "
                                            "AND ts_ms >= ?", (now_ms() - 7 * 86_400_000,))]
         snapshot_checklists(con, roots, now_ms())   # ADR-0005: checklist history for the progress forecast
         record_live(con, now_ms())                  # issue #9: live forecasts, scored later on /accuracy
-        write_report(con, config.data_dir() / "report.html")
+        write_report(con, config.data_dir() / "report.html", lang=lang)
         with open(config.data_dir() / "runs.jsonl", "a", encoding="utf-8") as f:   # M5: resident cost
             f.write(json.dumps(dict(ts_ms=now_ms(), wall_ms=round((time.perf_counter() - t0) * 1000),
                                     cpu_ms=round((time.process_time() - c0) * 1000))) + "\n")
@@ -191,8 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         rebuild_events_since = now_ms() - 7 * 86_400_000
         con.execute("DELETE FROM events WHERE start_ms >= ?", (rebuild_events_since,))
         for s in detect(con, rebuild_events_since, now_ms(), load_spike_params()):
-            record_spike(con, s, now_ms())
-        write_report(con, config.data_dir() / "report.html")
+            record_spike(con, s, now_ms(), lang=lang)
+        write_report(con, config.data_dir() / "report.html", lang=lang)
     elif a.cmd == "calibrate":
         if a.frm and a.to and a.pct:
             s = add_manual(con, local_ms(a.frm), local_ms(a.to), a.pct, now_ms())
@@ -203,9 +208,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"estimate: ${e['usd_per_pct']:.2f} per 1% (n={e['n']})" if e["usd_per_pct"]
               else f"estimate: need {3 - e['n']} more sample(s)")
     elif a.cmd == "report":
-        print(write_report(con, a.out or config.data_dir() / "report.html", days=a.days))
+        print(write_report(con, a.out or config.data_dir() / "report.html", days=a.days, lang=lang))
     elif a.cmd == "analyze":
-        an = analyze(con, local_ms(a.frm), local_ms(a.to))
+        an = analyze(con, local_ms(a.frm), local_ms(a.to), lang=lang)
         if a.save:
             record(con, "manual", an, now_ms())
         if a.json:
@@ -213,29 +218,31 @@ def main(argv: list[str] | None = None) -> int:
                                   sessions=an.sessions, causes=[asdict(c) for c in an.causes], note=an.note),
                              ensure_ascii=False))
         else:
-            print_analysis(an)
+            print_analysis(an, lang)
     elif a.cmd == "events":
-        evs = report_events(con, day_ms(a.since) if a.since else 0)
+        evs = report_events(con, day_ms(a.since) if a.since else 0, lang=lang)
         for e in evs:
             rise = f" +{e['rise']}%p" if e.get("rise") else ""
             print(f"#{e['id']} {fmt(e['start'])}~{fmt(e['end'])} [{e['kind']}{rise}] {e['headline']}")
-            print(f"    절약: {e['summary']}")
+            print("    " + t("cli.events.save", lang, summary=e["summary"]))
     elif a.cmd == "chunks":
-        r = analyze_chunks(con, now_ms() - a.days * 86_400_000, now_ms(), a.min_tokens)
+        r = analyze_chunks(con, now_ms() - a.days * 86_400_000, now_ms(), a.min_tokens, lang)
         o = r["overall"]
-        print(f"최근 {a.days}일, 도구 결과 {a.min_tokens:,}토큰 이상을 '큰 덩어리'로 집계: 전체 {o['chunks']}건, "
-              f"전체 토큰의 {o['token_share']:.1%} (비용 가중 {o['cost_share']:.1%})")
-        print(f"{'에이전트':<18}{'호출':>7}{'덩어리':>7}{'/100호출':>9}{'중앙값':>9}{'토큰%':>8}{'비용%':>8}  주된 출처")
+        print(t("cli.chunks.head", lang, days=a.days, min=a.min_tokens, n=o["chunks"], tok=o["token_share"],
+                cost=o["cost_share"]))
+        col = lambda k: t(f"cli.chunks.col.{k}", lang)
+        print(f"{col('agent'):<18}{col('calls'):>7}{col('chunks'):>7}{col('per100'):>9}{col('median'):>9}{col('tok'):>8}"
+              f"{col('cost'):>8}  {col('source')}")
         for g in r["agents"]:
             if not g["chunks"]:
                 continue
-            top = ", ".join(f"{c['category']} {c['chunks']}건" for c in g["categories"][:3])
+            top = ", ".join(t("cli.chunks.cat", lang, cat=c["category"], n=c["chunks"]) for c in g["categories"][:3])
             print(f"{g['project'][:17]:<18}{g['calls']:>7}{g['chunks']:>7}{g['per_100_calls']:>9}{g['median_chunk']:>9,}"
                   f"{g['token_share']:>8.1%}{g['cost_share']:>8.1%}  {top}")
     elif a.cmd == "savings":
-        evs = [e for e in report_events(con, day_ms(a.since) if a.since else now_ms() - 7 * 86_400_000)
+        evs = [e for e in report_events(con, day_ms(a.since) if a.since else now_ms() - 7 * 86_400_000, lang=lang)
                if e["kind"] == "pct"]
-        d = digest(evs, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"])
+        d = digest(evs, estimate(con, "five_hour")["usd_per_pct"], estimate(con, "seven_day")["usd_per_pct"], lang)
         print(d["headline"])
         for line in d["lines"]:
             print("  - " + line)
@@ -243,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         p = load_spike_params()
         n = 0
         for s in detect(con, day_ms(a.since) if a.since else first_call_ms(con), now_ms(), p):
-            record_spike(con, s, now_ms())
+            record_spike(con, s, now_ms(), lang=lang)
             n += 1
         print(f"recorded {n} events")
     elif a.cmd == "forecast":
@@ -254,23 +261,23 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"backtest at 1, 2, 4, … calls: {b['inside_p85']}/{b['cases']} forecasts within the P85 "
                   f"call count ({b['coverage']:.1%}; target ~85%), {b['coverage_p50']:.1%} within P50 (target ~50%)")
-            for t, v in sorted(b["by_type"].items(), key=lambda kv: -kv[1]["cases"]):
-                print(f"  {t:<28} {v['cases']:>5} cases  P85 {v['coverage']:.1%}  P50 {v['coverage_p50']:.1%}")
+            for typ, v in sorted(b["by_type"].items(), key=lambda kv: -kv[1]["cases"]):
+                print(f"  {typ:<28} {v['cases']:>5} cases  P85 {v['coverage']:.1%}  P50 {v['coverage_p50']:.1%}")
     elif a.cmd == "suggest-floor":
         v = suggest_floor(con, now_ms())
         print("no data" if v is None else f"p75 of active 15-min windows (7 days): ${v:.2f}")
     return 0
 
 
-def print_analysis(an) -> None:
+def print_analysis(an, lang: str = "ko") -> None:
     print(f"{fmt(an.start_ms)} ~ {fmt(an.end_ms)}  ${an.usd:.2f}, {an.calls} calls — {an.headline()}")
     for s in an.sessions[:5]:
         print(f"  session {s['session_id'][:8]} {s['project']:<16} {s['calls']:>4} calls  ${s['usd']:.2f} ({s['share']:.0%})")
     for c in an.causes:
         print(f"  [{c.label}] ${c.usd:.2f} {c.scope[:8]}")
-        print(f"     사실: {c.fact_text}")
-        print(f"     해석: {c.interpretation}")
-        print(f"     권고: {c.advice}")
+        print("     " + t("cli.analysis.fact", lang, text=c.fact_text))
+        print("     " + t("cli.analysis.interp", lang, text=c.interpretation))
+        print("     " + t("cli.analysis.advice", lang, text=c.advice))
     print(f"  * {an.note}")
 
 

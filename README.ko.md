@@ -2,6 +2,28 @@
 
 [English](README.md) · **한국어**
 
+**moni_token은 LLM을 한 번도 부르지 않는, 그래서 토큰을 전혀 쓰지 않는 Claude Code 사용량 모니터입니다.** 내 PC에
+있는 Claude Code 로그만 읽습니다. 5시간·주간 한도 %를 평소 범위와 나란히 보여 주고, 사용량이 튈 때마다 어느 세션이
+어떤 패턴으로 그랬는지, 얼마나 아낄 수 있었는지를 규칙으로 찾아 설명합니다. 실시간 에이전트 지도에서는 메인 세션과
+서브에이전트가 소스 트리의 어디서 일하는지 보이고, 실행 중인 서브에이전트에는 진행률 예측이 붙습니다. 그 예측이 얼마나
+맞았는지도 스스로 채점합니다. PC 밖으로 나가는 것은 없습니다.
+
+## 빠른 시작
+
+Python 3.12 이상과 [uv](https://docs.astral.sh/uv/)가 필요합니다(자세한 내용은 [설치](#설치)).
+
+```powershell
+git clone https://github.com/reddol18/moni_token.git; cd moni_token; uv sync
+uv run moni-token collect     # 기존 Claude Code 로그를 ~/.moni_token/usage.db로 읽어 들임
+uv run moni-token map         # http://127.0.0.1:4990/ 에서 사용량 화면, 에이전트 지도, 예측 정확도
+```
+
+화면은 영어와 한국어를 지원합니다. 페이지 주소의 `?lang=ko|en`, CLI의 `--lang`, `~/.moni_token/config.toml`의
+`lang = "ko"` 중 하나로 고르고, 아무것도 없으면 OS 로캘을 따릅니다. 페이지 머리줄의 전환 버튼으로도 바꿀 수 있습니다
+([언어 추가하기](#언어-추가하기) 참고).
+
+---
+
 > "별로 한 것도 없는데 왜 50분 만에 Claude 한도가 5%나 빠졌지?"
 
 moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니다. 한도 사용률이 갑자기 오르면 **어느 세션** 때문인지,
@@ -27,10 +49,10 @@ moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니�
   도구 이름, 크기, 도구가 다룬 프로젝트 기준 상대 경로 — [ADR-0004](docs/adr/0004-agent-map-paths-and-server.md))만 남깁니다.
 - **로그는 읽기만 합니다.** Claude Code의 파일을 고치거나 지우지 않습니다.
 
-![moni_token 대시보드](docs/img/dashboard.png)
+![moni_token 대시보드](docs/img/ko/dashboard.png)
 
-<sub>합성 데모 데이터(`scripts/demo_report.py`)로 찍은 화면입니다.
-어두운 테마: [docs/img/dashboard-dark.png](docs/img/dashboard-dark.png) — OS 설정을 따르고, ◐ 버튼으로 바꿀 수 있습니다.</sub>
+<sub>합성 데모 데이터(`scripts/demo_report.py --lang ko`)로 찍은 화면입니다.
+어두운 테마: [docs/img/ko/dashboard-dark.png](docs/img/ko/dashboard-dark.png) — OS 설정을 따르고, ◐ 버튼으로 바꿀 수 있습니다.</sub>
 
 차트는 저장소에 함께 들어 있는 [uPlot](https://github.com/leeoniya/uPlot)으로 그립니다. 끌어서 확대하고 더블클릭으로
 되돌리며, 5시간·주간 차트의 커서가 함께 움직이고, 빨간 급상승 띠를 누르면 그 사건이 열립니다.
@@ -45,7 +67,7 @@ moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니�
 | 한도 그래프 | 시간에 따른 한도 %. 실선은 실측(Claude Code 상태줄 값), 점선은 로그로 추정한 값. 빨간 띠는 급상승 사건 |
 | 급상승 사건 | 사건마다 원인. 행을 누르면 프로젝트별 점유율, 근거 수치, 그 구간의 호출 타임라인이 열림 |
 
-![사건 상세](docs/img/event-detail.png)
+![사건 상세](docs/img/ko/event-detail.png)
 
 ### 알아내는 원인
 
@@ -63,6 +85,8 @@ moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니�
 
 ## 기존 도구와의 차이
 
+**사용량·비용 도구**
+
 | 도구 | 잘하는 것 | moni_token이 더하는 것 |
 |---|---|---|
 | [ccusage](https://github.com/ryoppippi/ccusage) | 일·세션·5시간 구간별 토큰과 비용 집계 | 어떤 구간이 *왜* 비쌌는지 설명하고 사건으로 기록 |
@@ -71,8 +95,70 @@ moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니�
 | [claude-hud](https://github.com/jarrodwatts/claude-hud) | 상태줄: 컨텍스트, 한도, 실행 중인 도구·에이전트, 할 일 | claude-hud 줄 앞에 원인이 붙은 급상승 경고(다시 만들지 않고 감싸서 씀) |
 | [agents-observe](https://github.com/simple10/agents-observe) | 훅 이벤트를 로컬 웹 UI로: 서브에이전트 계층, 타임라인, 에이전트별 토큰 | 소스 트리·UI 페이지·계약 문서 기능 위의 위치 표시, 로그로 과거 세션도 읽음, Docker 불필요, 프롬프트·파일 내용 미저장 |
 
+**진행률·남은 시간 도구** (각 도구가 직접 밝힌 내용 기준, 2026-11-13 확인. "밝히지 않음"은 페이지에 적혀 있지 않다는
+뜻이지 "없다"는 뜻이 아닙니다)
+
+| 도구 | 보여 주는 것 | 진행률·시간 추정 방식 | 모델 호출 | 자기 정확도 측정 | 5시간·주간 한도 | 실행 형태 |
+|---|---|---|---|---|---|---|
+| Claude Code 내장 서브에이전트 진행 요약 | 실행 중인 서브에이전트 줄에 붙는 짧은 상태 문구 | 모델이 서브에이전트 작업을 보고 씀 | 있음. 변경 기록에 "요청"으로 적혀 있고, 비용은 문서가 아니라 사용자 보고로만 나옴 | 없음 | 없음 | 내장. `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES=1`로 끔 |
+| [claude-time-left](https://github.com/DJsluxx/claude-time-left) | 서브에이전트·긴 도구 호출·현재 턴의 경과·남은 시간·막대 | 같은 종류(`agent:Explore`, `tool:Bash`) 최근 20회의 중앙값. 기록이 없으면 기본값에 `(guess)` 표시 | 밝히지 않음 | 없음("over by …"만 표시) | 언급 없음 | 플러그인 창(대화 옆) |
+| [claude-time-estimate](https://github.com/TomerBenShimol/claude-time-estimate) | 프롬프트 위 카운트다운, 백그라운드 에이전트 `sub-agents 2/5` | 할 일 목록이 있으면 완료 작업당 평균 시간 × 남은 작업 수. 없으면 지금보다 오래 걸린 과거 응답들의 중앙값(5건 이상 필요) | 없다고 설명, 네트워크 호출 없음 | 없음("대략적인 안내") | 언급 없음 | 모드(프롬프트 위 띠) |
+| [claude-code-progress-board](https://github.com/ewxgwy1987/claude-code-progress-board) | 목표·작업·서브에이전트·워크플로·도구 활동별 막대와 남은 시간 | 같은 종류 최근 30회 소요 시간의 중앙값. % = 경과 ÷ 추정치, 끝나기 전엔 상한 | 타이머는 없음. 제목 없는 워크플로 에이전트 이름 짓기에만 Haiku 한 번(출력 120토큰 이하) | 없음("over estimate" 표시) | 언급 없음(별도 도구 안내) | 모드 창(터미널·데스크톱) |
+| [progress-hud](https://github.com/jandro-es/progress-hud) | 서브에이전트·작업·셸·합계: ETA, 비용, 소모 속도, 컨텍스트, 사용 한도 구간 | 세션을 넘겨 쌓은 소요 시간, 시간 기반 막대, 작업 완료/전체 | 밝히지 않음(비용은 토큰 수로 계산) | 밝히지 않음 | 사용 한도 구간 표시 | 모드 창 + 한 줄 상태줄 |
+| [task-progress-bar](https://github.com/PRAFULREDDYM/task-progress-bar) | 작업 완료율, 완료·진행·대기 수, 남은 시간 | 작업 파일 집계. 완료 간격의 지수이동평균(α 0.3) × 남은 작업 수 | 없음("토큰 소비 없음") | 없음 | 없음 | 상태줄 + `PostToolUse` 훅, CLI |
+| [claude-code-agent-status](https://github.com/hg913488/claude-code-agent-status) | 메인 + 서브에이전트 최대 12개의 현재 동작·진행률·모델·경과 | 할 일 목록이 있으면 완료/전체, 없으면 단계 기반 추정(최대 90%) | 밝히지 않음("프롬프트에 아무것도 더하지 않음") | 밝히지 않음 | 언급 없음 | 모드 패널(`/agent-status`) |
+| [savvy-progress](https://claude-mods.com/savvy-progress/) | 모든 서브에이전트의 작업·모델·effort·컨텍스트·비용·경과 | 개수만 셈: 계획된 작업(savvy-flow 사용 시)과 작업자가 보고한 단계. 예측은 없음 | 모델 호출 없음. 프롬프트에 짧은 도구 설명이 붙음 | 없음 | 없음 | 모드 패널 + 프롬프트 위 막대 |
+| **moni_token** | 한도 %와 평소선, 급상승 원인, 에이전트 지도, 파일별 토큰 비용 | 같은 `agentType`으로 지금만큼 진행했던 완료 실행 10건 이상과 비교해 호출 수·시간·남은 5시간 %p의 P50/P85 | 없음 | 있음: `/accuracy` 페이지, `moni-token forecast` 재현 | 둘 다, 평소선과 함께 | 로컬 웹 페이지 + 상태줄 경고 |
+
+- **내장 진행 요약.** 공식 [변경 기록](https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md)(2.1.323)에는
+  `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES=1`이 "서브에이전트 진행 요약과 그것을 쓰는 요청"을 끈다고 적혀 있습니다.
+  이 변수는 2.1.318부터 있었지만, 2026-11-13 기준 [환경 변수 문서](https://code.claude.com/docs/en/env-vars)에는 아직
+  없습니다. 비용은 공식 수치가 아니라 사용자 보고입니다.
+  [한 측정](https://bestagent.dev/claude-code-background-agent-labels-cost-2026)에서는 Haiku가 문구를 쓸 때 세션 비용의
+  0.1~0.2%였고, 텔레메트리를 끄자 에이전트 컨텍스트 전체가 메인 모델로 가서 약 19%까지 올랐습니다. 15~20%라는 보고도
+  있습니다. moni_token은 이 문구를 대신하지 않습니다. 켜 두든 끄든 실제로 쓴 양을 기록할 뿐입니다.
+- **다른 도구가 나은 점.** 위 도구 대부분은 Claude Code 안의 창·띠·상태줄로 돌아가서 터미널을 떠나지 않고 진행 상황을
+  볼 수 있습니다. moni_token의 지도와 예측은 로컬 웹 페이지에 있고, 상태줄에는 급상승 경고만 나옵니다.
+  claude-time-estimate, task-progress-bar, claude-code-agent-status는 Claude의 할 일 목록(`TaskCreate` / `TodoWrite`)으로
+  진행률을 셉니다. moni_token은 이 목록을 쓰지 않고, 계약 문서의 체크리스트만 봅니다. progress-hud는 셸 명령과
+  에이전트별 비용까지 보여 주고, claude-time-left와 progress-board는 도구 호출과 메인 턴의 시간도 잽니다.
+- **moni_token이 다른 점.** 예측은 서브에이전트만 합니다(메인 에이전트는 예측 없음). 단위도 분만이 아니라 호출 수·분·5시간
+  %p이고, 지금까지 얼마나 진행했는지를 조건으로 겁니다. 자기 예측을 채점해 보여 주는(`/accuracy`) 도구는 이 표에서
+  moni_token뿐입니다. 위 진행률 도구 중 예측을 5시간·주간 한도와 잇는 도구는 없습니다. progress-hud가 한도 구간을 보여
+  주지만 그 한도에 대한 예측은 하지 않습니다.
+- **기록이 쌓이기 전.** moni_token은 비교할 과거 실행이 10건은 있어야 예측을 보여 줍니다. claude-time-estimate는 에이전트
+  1건, 턴 5건이면 되고, claude-time-left와 progress-board는 기본값으로 시작하거나 "no estimate yet"을 띄웁니다.
+- **토큰 사용.** moni_token, task-progress-bar, claude-time-estimate는 모델을 부르지 않는다고 설명합니다. progress-board는
+  한 경우에만 Haiku를 짧게 한 번 부르고, savvy-progress는 프롬프트에 짧은 도구 설명이 붙습니다. claude-time-left,
+  progress-hud, claude-code-agent-status는 이 점을 밝히지 않습니다.
+- **라이선스.** claude-time-estimate만 페이지에 라이선스가 없고, 나머지는 모두 MIT입니다.
+
 moni_token은 이 도구들을 대체하려는 게 아닙니다. 합계는 ccusage, 실시간 HUD는 claude-hud로 보고, 숫자가 이상하거나
 에이전트가 어디서 일하는지 보고 싶을 때 moni_token을 쓰면 됩니다.
+
+<details>
+<summary>출처 (2026-11-13 확인)</summary>
+
+공식(Anthropic):
+- [Claude Code 변경 기록](https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md): 진행 요약에 관한
+  2.1.318, 2.1.321, 2.1.323 항목
+- [환경 변수 문서](https://code.claude.com/docs/en/env-vars): `CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES` 항목 없음
+- [서브에이전트 문서](https://code.claude.com/docs/en/sub-agents): 진행 요약에 관한 절 없음
+
+커뮤니티 보고(공식 아님):
+- [bestagent.dev](https://bestagent.dev/claude-code-background-agent-labels-cost-2026): PC 한 대에서 잰 값. Haiku 문구
+  0.1~0.2%, 텔레메트리를 끄면 약 19%
+- [wmedia.es](https://wmedia.es/en/tips/claude-code-background-agents-status-cost): 세션 하나를 `--debug-file`로 잰 값
+  (예전 방식에서 출력 14토큰에 입력 약 50k토큰)
+- [flamerix-ai gist](https://gist.github.com/flamerix-ai/c3905705cc4205e5de3011fa2e74efce): 한 팀 지출의 16.4%
+  (bestagent.dev 인용)
+- [Hacker News 글타래](https://news.ycombinator.com/item?id=50284255): Anthropic 엔지니어의 답이라고 전해지는 내용
+  (bestagent.dev 인용)
+
+도구: 위 표에 링크한 각 도구의 README나 페이지. 사용량·비용 도구 표는 이전에 쓴 것이고 2026-11-13에 다시 확인하지
+않았습니다.
+
+</details>
 
 ## 설치
 
@@ -156,7 +242,7 @@ uv run moni-token observe --session 49 --session-reset "2026-10-07 02:30" --week
 uv run moni-token map          # http://127.0.0.1:4990/
 ```
 
-![실시간 에이전트 지도](docs/img/agent-map.png)
+![실시간 에이전트 지도](docs/img/ko/agent-map.png)
 
 <sub>이 저장소를 개발하는 도중 찍은 지도입니다. 서브에이전트(general-purpose)는 실행 중이고 진행 예측이 나와 있으며, main에는 "진행 예측: main 미지원"이 표시됩니다. 빨간 파일은 수정된 파일이고, 옆 숫자는 파일별 토큰 비용입니다.</sub>
 
@@ -200,7 +286,7 @@ uv run moni-token map          # http://127.0.0.1:4990/
 
 main 에이전트는 진행 예측을 하지 않습니다. 권장 구성에서 main은 지시와 검수만 맡기 때문이며, 지도에는 그 사실이 툴팁으로 표시됩니다.
 
-![예측 정확도](docs/img/accuracy.png)
+![예측 정확도](docs/img/ko/accuracy.png)
 
 **예측 정확도:** **http://127.0.0.1:4990/accuracy**
 - **기록:** 지도 서버(20초마다)와 `check`가 실행 중인 서브에이전트마다 그때 보인 예측을 호출 수가 바뀔 때마다 숫자로만 남깁니다(`forecast_snaps` 표). 실행이 끝나면 채점합니다.
@@ -254,11 +340,12 @@ single_call_cache_write_tokens = 200000   # 호출 하나가 이만큼 캐시에
 ## 내 데이터 없이 써 보기
 
 ```powershell
-uv run python scripts/demo_report.py demo
+uv run python scripts/demo_report.py demo --lang ko
 start demo\report.html
 ```
 
-위의 패턴을 모두 담은 가짜 로그를 만들고 그걸로 리포트를 생성합니다. 이 README의 스크린샷도 이걸로 찍었습니다.
+위의 패턴을 모두 담은 가짜 로그를 만들고 그걸로 리포트를 생성합니다(`--lang en`이면 영어). 이 README의 대시보드
+스크린샷도 이걸로 찍었습니다.
 
 ## 한계
 
@@ -279,6 +366,22 @@ uv run pytest
 ```
 
 설계 기록은 `docs/adr/`에 있습니다. 패키지가 LLM 클라이언트를 import하지 않는지 테스트로 검사합니다.
+
+## 언어 추가하기
+
+화면·알림·상태줄·CLI에 나오는 문장은 모두 메시지 카탈로그에서 옵니다. `src/moni_token/locales/`에 언어마다
+JSON 파일이 하나씩 있습니다(`en.json`, `ko.json`). 실행 중 번역은 하지 않습니다.
+
+1. `en.json`을 `<코드>.json`(예: `ja.json`)으로 복사하고 값만 번역합니다. 키와 `{자리표시자}`는 그대로
+   둡니다. `{share:.0%}` 같은 서식도 그대로 둡니다. `p.`로 시작하는 키는 페이지 문장이라 자리표시자가 단순한
+   `{name}` 형식입니다. `p.locale`에는 날짜·숫자 표기에 쓸 로캘(예: `ja-JP`)을 적습니다.
+2. `src/moni_token/i18n.py`의 `NATIVE`에 그 언어의 자기 이름을 추가합니다. 언어 전환 버튼에 그 이름이 나옵니다.
+3. `uv run pytest`를 실행합니다. 키나 자리표시자가 빠지면 `tests/test_i18n.py`가 실패합니다.
+
+언어는 다음 순서로 고릅니다. CLI의 `--lang` 또는 페이지의 `?lang=`가 먼저이고, 그다음
+`~/.moni_token/config.toml`의 `lang = "<코드>"`, OS 로캘 순입니다. 셋 다 없으면 영어입니다. 페이지 머리줄의 전환
+버튼은 한국어와 영어를 오가고, 고른 언어를 브라우저에 기억합니다. 이전에 기록된 사건도 템플릿 키와 숫자를 함께
+갖고 있어서 지금 언어로 보입니다.
 
 ## 라이선스
 

@@ -2,6 +2,8 @@
 
 Example config.toml:
 
+    lang = "en"                 # pages, notifications, status line and CLI (issue #12); en | ko
+
     [spike]
     window_min = 15
     baseline_min = 60

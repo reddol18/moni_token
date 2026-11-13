@@ -58,21 +58,43 @@ def own_line(obs: dict) -> str:
     return " · ".join(parts) or "moni_token"
 
 
-def warning(now_ms: int) -> str:
-    """The live spike warning written by `check`, or "" (issue #2). Never raises."""
+def warning(now_ms: int, lang: str | None = None) -> str:
+    """The live spike warning written by `check`, or "" (issue #2). Never raises.
+    When `check` stored its numbers (issue #12) it is rendered in `lang` (None: config.toml, then the OS locale);
+    otherwise the stored text is shown. No database: one small JSON file, and the catalog only when needed."""
     try:
         w = json.loads(config.live_path().read_text(encoding="utf-8"))
-        return str(w["text"]) if w and now_ms < w["until_ms"] else ""
+        if not w or now_ms >= w["until_ms"]:
+            return ""
+        if "kind" in w:
+            try:
+                from .i18n import resolve_lang, warning_text
+                return warning_text(w, lang or resolve_lang())
+            except Exception:
+                pass
+        return str(w["text"])
     except Exception:
         return ""
 
 
+def _opts(argv: list[str]) -> dict:
+    out, i = {}, 0
+    while i + 1 < len(argv):
+        if argv[i] in ("--wrap", "--lang"):
+            out[argv[i][2:]] = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    opts = _opts(argv)
     raw = sys.stdin.buffer.read()
     obs = None
     now = int(time.time() * 1000)
-    warn = warning(now)
+    warn = warning(now, opts.get("lang"))
     try:
         d = json.loads(raw or b"{}")
         obs = extract(d)
@@ -84,9 +106,9 @@ def main(argv: list[str] | None = None) -> int:
             has_seven_day="seven_day" in rl)), encoding="utf-8")
     except Exception:  # a status line must never break Claude Code
         pass
-    if len(argv) >= 2 and argv[0] == "--wrap":
+    if opts.get("wrap"):
         try:
-            r = subprocess.run(argv[1], input=raw, capture_output=True, shell=True, timeout=5)
+            r = subprocess.run(opts["wrap"], input=raw, capture_output=True, shell=True, timeout=5)
             # the wrapped line keeps its own bytes (and colors); the warning goes in front of its first line
             sys.stdout.buffer.write((warn + " │ ").encode("utf-8") + r.stdout if warn else r.stdout)
             return 0
