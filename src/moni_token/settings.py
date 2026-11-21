@@ -12,6 +12,10 @@ Example config.toml:
     single_call_cache_write_tokens = 200000
     realert_min = 30
     escalate_factor = 2.0
+
+    [map]
+    uia = false                 # read the project's running window via Windows UI Automation (ADR-0007)
+    uia_window = ""             # else: a window whose title contains this
 """
 import tomllib
 from dataclasses import dataclass, fields
@@ -29,6 +33,23 @@ class SpikeParams:
     realert_min: int = 30
     escalate_factor: float = 2.0    # re-alert inside realert_min only if ratio grew this much
     pct_jump: float = 3.0           # 5h limit rising this many %p within window_min is an event (ADR-0003)
+
+
+@dataclass(frozen=True)
+class MapParams:
+    """[map] in config.toml (issue #16, ADR-0007). `uia` turns on reading the project's running window through
+    Windows UI Automation; `uia_window` picks a window by title when no process runs from the project folder."""
+    uia: bool = False
+    uia_window: str = ""
+
+
+def load_map_params(path=None) -> MapParams:
+    p = path or (config.data_dir() / "config.toml")
+    try:
+        raw = tomllib.loads(p.read_text(encoding="utf-8")).get("map", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        raw = {}
+    return MapParams(uia=raw.get("uia") is True, uia_window=str(raw.get("uia_window") or ""))
 
 
 def load_spike_params(path=None) -> SpikeParams:

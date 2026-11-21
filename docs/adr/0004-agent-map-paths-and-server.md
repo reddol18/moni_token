@@ -39,3 +39,39 @@
 - 서브에이전트의 **작업 설명**(`agent-*.meta.json`의 `description`, 부모가 붙인 짧은 제목)을 지도 화면에 **보여 주기만** 한다.
   - 요청할 때마다 메타 파일에서 읽고 80자로 자른다. DB·로그·정적 리포트에는 넣지 않는다(테스트로 강제).
   - 이유: "어떤 일을 하고 있는지"가 가장 잘 드러나는 정보다. 화면은 127.0.0.1에서만 열린다.
+
+## 추가 결정 (2026-11-21, 이슈 https://github.com/reddol18/moni_token/issues/15)
+
+맥락: Grep/Glob의 검색 범위(폴더)가 "읽기"로 세어져, 검색만 한 폴더가 읽은 파일과 같은 표시로 그려졌다.
+
+도구별로 남는 "다룬 곳"(`call_tools.path`는 `parser._tool_path`: 입력 키 `file_path`·`notebook_path`·`path` 중 cwd 안에 있는 첫 값):
+
+| 도구 | 쓰는 입력 | 종류 | 굵게/빨강 | 횟수 막대 | 현재 위치(`where`) | 페이지·기능 |
+|---|---|---|---|---|---|---|
+| Read, NotebookRead | `file_path`/`notebook_path` | read | 굵게 | 셈 | 예 | 예 |
+| Edit, Write, MultiEdit, NotebookEdit | `file_path`/`notebook_path` | edit | 빨강 | 셈 | 예 | 예 |
+| Grep | `path`(폴더 또는 파일) | **search** | 아니오 | 안 셈 | 아니오 | 아니오 |
+| Glob, LS | `path`(폴더). 패턴은 저장 안 함 | **search** | 아니오 | 안 셈 | 아니오 | 아니오 |
+| Grep/Glob(`path` 없음) | - | 없음(타임라인 표시만) | | | | |
+| Bash, PowerShell 등 | 명령은 저장 안 함 | 없음(타임라인 표시만) | | | | |
+| `path` 키가 있는 mcp__* | `path` | read | 굵게 | 셈 | 예 | 예 |
+
+- 하위 폴더 cwd(서브에이전트): 저장된 경로는 그 호출의 cwd 기준이고, 지도에서 `rel_path(_join(cwd, path), root)`로 프로젝트 루트 기준으로 바꾼다. 루트 밖이면 버린다(타임라인 표시만).
+
+결정:
+- 검색 범위는 별도 종류 `search`로 그린다. 트리에서 이름에 점선 밑줄, 에이전트 색 테두리의 빈 점, 툴팁 "Grep scope · main · 23:25:19". 굵게·횟수 막대·현재 위치·페이지·기능에 넣지 않고, 아래 파일에도 표시하지 않는다. 보이도록 상위 폴더만 펼친다.
+- 타임라인에도 `search` 종류(테두리만 있는 표시)를 따로 두었다. 읽기와 같은 색으로 두면 툴팁이 여전히 "읽기 · docs/artifacts"라 같은 오해가 남기 때문이다.
+- 표는 `src/moni_token/agentmap.py` 모듈 docstring에도 있다. DB 스키마는 바뀌지 않는다(종류는 도구 이름으로 매번 계산).
+
+## 추가 결정 (2026-11-21, 이슈 https://github.com/reddol18/moni_token/issues/17)
+
+맥락: 프로젝트 루트를 "메인이 가장 최근에 쓴 cwd"로 정해서, fund_agent의 메인이 `output/screening`으로 `cd`하자 루트가
+그 폴더로 줄고 `docs/...` touch가 전부 사라졌다. `?at=`도 그 시점이 아니라 전체 기간의 최신 cwd를 썼다.
+
+결정(`project_root(con, project_dir, now_ms)`):
+- `now_ms`(`?at=`)까지의 **메인** 호출 cwd만 쓴다(메인 기록이 없을 때만 서브에이전트 cwd).
+- 기준 폴더 = 로그 폴더 이름(`E--claude-dev-base-fund-agent`, 영숫자가 아닌 글자를 `-`로 바꾼 것)과 같은 cwd, 즉 시작 폴더.
+  없으면 그 cwd들의 가장 짧은 공통 상위 폴더(드라이브 루트가 되면 최신 cwd).
+- 루트 = 기준 폴더 위의 git 루트(`.git`이 있는 가장 가까운 상위), 없으면 기준 폴더.
+- 한계: 호출 당시 cwd 밖의 경로는 수집 때 버려진다(`parser._tool_path`). 메인이 하위 폴더에 있는 동안 `docs/...`를
+  읽으면 그 touch는 원래 남지 않는다. 수집 규칙은 바꾸지 않았다.

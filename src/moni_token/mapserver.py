@@ -17,6 +17,7 @@ from .db import connect
 from .forecast import backtest_cases, remaining_usage
 from .i18n import normalize, resolve_lang, t
 from .report import build_data, header, render
+from .settings import load_map_params
 from .ui import fill, head, shell_html
 
 HOST = "127.0.0.1"
@@ -86,7 +87,8 @@ def make_handler(db: Path, projects: Path, lang: str | None = None):
                     at = int((q.get("at") or [0])[0])   # ?at=<epoch ms>: look back
                     now = at or int(time.time() * 1000)
                     st = build_state(con, projects, now, (q.get("project") or [None])[0],
-                                     int((q.get("window") or ["30"])[0]), live=not at)
+                                     int((q.get("window") or ["30"])[0]), live=not at,
+                                     map_params=load_map_params())
                     st["header"] = header(con, now, live=not at, lang=lg)
                     st["usage_forecast"] = remaining_usage([a["forecast"] or {} for a in st["agents"]],
                                                            estimate(con, "five_hour")["usd_per_pct"],
@@ -150,9 +152,16 @@ ul.tree{list-style:none;margin:0;padding-left:14px}ul.tree.root{padding-left:0}.
 .heat{display:inline-block;height:5px;border-radius:3px;background:var(--line);opacity:.55;margin-left:6px;vertical-align:1px}
 .dots{margin-left:4px}.dots i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:2px}
 .dots i.now{outline:2px solid var(--text-primary);outline-offset:1px}
+.tree .sr{text-decoration:underline dashed var(--text-secondary);text-underline-offset:3px}
+.dots i.ho{background:transparent;border:1.5px dashed;box-sizing:border-box;cursor:help}
+.tlg{margin:-2px 0 8px}.tlg .f{font-family:var(--mono)}.tlg b.ed{color:var(--critical)}
+.tlg .dots i{background:var(--muted)}.tlg .dots i.ho{background:transparent;border-color:var(--muted)}
 details>summary{cursor:pointer;list-style:none}details>summary::before{content:"▸ ";color:var(--muted)}
 details[open]>summary::before{content:"▾ "}.scroll{max-height:64vh;overflow:auto}
 .pg,.ft{padding:4px 6px;border-bottom:1px solid var(--grid)}.pg.on,.ft.on{background:var(--surface-2);border-radius:4px}
+.pg.ui{cursor:pointer}.ued{color:var(--critical)}
+.uh{display:flex;align-items:flex-start;gap:4px}.uh .dots{flex:none;margin:0;line-height:1;padding-top:.45em}.uh .dots i{vertical-align:top}.uh>span:last-child{min-width:0;overflow-wrap:anywhere}.un{font-size:12px;line-height:1.6;white-space:nowrap;color:var(--text-secondary)}
+.un.on{color:var(--text-primary);font-weight:600}
 .meter{height:4px;background:var(--grid);border-radius:2px;overflow:hidden;margin:3px 0}.meter i{display:block;height:100%;background:var(--line)}
 .empty{color:var(--muted)}.cost{margin-left:8px;color:var(--text-secondary);font-size:11px;font-family:var(--mono)}
 #lanes svg{display:block;width:100%}#lanes text{fill:var(--text-secondary);font-size:11px}
@@ -172,17 +181,20 @@ PAGE = r"""/*HEAD*/<body>/*SHELL*/
 <div class="lg" id="lg"></div><div id="lanes"></div></section>
 <div class="cols">
 <section class="card"><h2>[[p.m.h_agents]]</h2><div class="k" id="ufc"></div><div id="agents" class="scroll"></div></section>
-<section class="card"><h2>[[p.m.h_tree]] <span class="k">[[p.m.h_tree_k]]</span></h2><div id="tree" class="scroll"></div></section>
-<section class="card"><h2>[[p.m.h_pages]]</h2><div id="pages"></div><h2 style="margin-top:14px">[[p.m.h_feats]] <span class="k">[[p.m.h_feats_k]]</span></h2><div id="feats" class="scroll"></div></section>
+<section class="card"><h2>[[p.m.h_tree]] <span class="k">[[p.m.h_tree_k]]</span></h2>
+<div class="lg tlg" id="tlg"><span class="f"><b>[[p.m.tl_read]]</b></span><span class="f"><b class="ed">[[p.m.tl_edit]]</b></span><span class="f sr">[[p.m.tl_search]]<span class="dots"><i class="ho"></i></span></span><span><span class="dots"><i class="now"></i></span>[[p.m.tl_now]]</span></div><div id="tree" class="scroll"></div></section>
+<section class="card"><h2>[[p.m.h_pages]] <span class="k">[[p.m.h_pages_k]]</span></h2><div id="pages" class="scroll" style="max-height:40vh"></div><h2 style="margin-top:14px">[[p.m.h_feats]] <span class="k">[[p.m.h_feats_k]]</span></h2><div id="feats" class="scroll"></div></section>
 </div></div>
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const PAL=['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(--s6)','var(--s7)'];
-const KIND={read:[T('p.m.k_read'),'var(--s1)'],edit:[T('p.m.k_edit'),'var(--critical)'],run:[T('p.m.k_run'),'var(--s4)'],web:[T('p.m.k_web'),'var(--s7)'],agent:[T('p.m.k_agent'),'var(--s3)'],mcp:['MCP','var(--s5)'],other:[T('p.m.k_other'),'var(--muted)']};
+const KIND={read:[T('p.m.k_read'),'var(--s1)'],search:[T('p.m.k_search'),'var(--s2)'],edit:[T('p.m.k_edit'),'var(--critical)'],run:[T('p.m.k_run'),'var(--s4)'],web:[T('p.m.k_web'),'var(--s7)'],agent:[T('p.m.k_agent'),'var(--s3)'],mcp:['MCP','var(--s5)'],other:[T('p.m.k_other'),'var(--muted)']};
 const ST={running:T('p.m.st_running'),idle:T('p.m.st_idle'),done:T('p.m.st_done')},tk=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?Math.round(n/1e3)+'k':String(n);let open=new Set(),focusPath=null,D=null;
 const U=new URLSearchParams(location.search),AT=U.get('at');let proj=U.get('project');
 if(U.get('window')){const w=U.get('window'),s=$('#win');if(![...s.options].some(o=>o.value===w))s.add(new Option(T('p.m.wn',{n:w}),w));s.value=w}
-$('#lg').innerHTML=Object.values(KIND).map(([n,c])=>`<span><i style="background:${c}"></i>${n}</span>`).join('');
+// issue #15: a search scope (Grep/Glob) is a hollow mark, a read or edit a filled one
+const segFill=(k,c)=>k==='search'?`fill="none" stroke="${c}" stroke-width="1.5"`:`fill="${c}"`;
+$('#lg').innerHTML=Object.entries(KIND).map(([k,[n,c]])=>`<span><i style="${k==='search'?`border:1.5px solid ${c};box-sizing:border-box`:`background:${c}`}"></i>${n}</span>`).join('');
 // issue #11: `frozen` is the moment shown while paused (epoch ms); null = live. A page opened with ?at= starts frozen.
 let frozen=AT?+AT:null,seq=0;
 async function tick(){
@@ -218,10 +230,10 @@ function draw(){if(!D)return;
   return `<div class="k">${T('p.m.fc')} <span class="badge">${T('p.est')}</span> ${T('p.m.fc_body',{calls:f.calls,p50:f.calls_p50,p85:f.calls_p85,r50:mins(f.remain_ms_p50),r85:mins(f.remain_ms_p85),n:f.n})}${f.scope==='all'?T('p.m.fc_all'):''}</div>
   <div class="meter" title="${T('p.m.fc_meter')}"><i style="width:${Math.round((f.progress||0)*100)}%"></i></div>`};
  const UF=D.usage_forecast;$('#ufc').innerHTML=UF?T('p.m.uf',{n:UF.agents,amount:`<b>+${UF.pp_p50}~${UF.pp_p85}%p</b>`})+(UF.over_limit_p85?` <span class="warn">${T('p.m.uf_over')}</span>`:''):'';
- $('#agents').innerHTML=D.agents.map(a=>{const t=a.touches.at(-1);
+ $('#agents').innerHTML=D.agents.map(a=>{const t=a.touches.findLast(x=>x.kind!=='search')||a.touches.at(-1);
   return `<div class="ag"><div><span class="sw" style="background:${col[a.key]}"></span><b>${esc(a.type)}</b> <span class="badge ${a.status==='running'?'run':a.status==='done'?'done':''}">${ST[a.status]}</span> <span class="k mono">${esc(a.session)}${a.agent?' · '+esc(a.agent.slice(0,8)):''}</span></div>
   ${a.desc?`<div>${esc(a.desc)}</div>`:''}<div class="k">${T('p.m.ag_stats',{calls:a.calls,tok:(a.tokens/1000).toFixed(0),ago:ago(a.last_ms)})}${a.tool?' · '+esc(a.tool):''}${wsh(a.win)}</div>
-  ${t?`<div class="path mono">${t.edit?'✎ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">${T('p.m.page',{p:esc(t.page)})}</div>`:''}${t.features.length?`<div class="k">${T('p.m.feats',{f:t.features.map(i=>esc(D.features[i].title)).join(', ')})}</div>`:''}`:`<div class="k">${T('p.m.no_files')}</div>`}${a.agent?fc(a.forecast):`<div class="k" title="${T('p.m.main_tip')}" style="cursor:help">${T('p.m.main_na')}</div>`}${a.top_file&&a.top_file.carried>=1000?`<div class="k">${T('p.m.top_file',{path:`<span class="mono">${esc(a.top_file.path)}</span>`,tok:tk(a.top_file.carried)})}</div>`:''}</div>`}).join('')||`<p class="empty">${T('p.m.no_agents')}</p>`;
+  ${t?`<div class="path mono">${t.edit?'✎ ':t.kind==='search'?'⌕ ':'👁 '}${esc(t.path)}</div>${t.page?`<div class="k">${T('p.m.page',{p:esc(t.page)})}</div>`:''}${t.features.length?`<div class="k">${T('p.m.feats',{f:t.features.map(i=>esc(D.features[i].title)).join(', ')})}</div>`:''}`:`<div class="k">${T('p.m.no_files')}</div>`}${a.agent?fc(a.forecast):`<div class="k" title="${T('p.m.main_tip')}" style="cursor:help">${T('p.m.main_na')}</div>`}${a.top_file&&a.top_file.carried>=1000?`<div class="k">${T('p.m.top_file',{path:`<span class="mono">${esc(a.top_file.path)}</span>`,tok:tk(a.top_file.carried)})}</div>`:''}</div>`}).join('')||`<p class="empty">${T('p.m.no_agents')}</p>`;
  tree(col);pagesFeats(col)}
 function lanes(col){
  const box=$('#lanes'),W=box.clientWidth||900,R=10,rh=22,ags=D.agents.filter(a=>a.lanes.length);
@@ -241,17 +253,21 @@ function lanes(col){
  for(const t of D.ticks||[]){const xx=x(t),a=xx>W-R-20?'end':xx<L+20?'start':'middle';
   g+=`<line x1="${xx}" x2="${xx}" y1="0" y2="${H-18}" stroke="var(--grid)"/><text x="${xx}" y="${H-4}" text-anchor="${a}">${hm(t)}</text>`}
  ags.forEach((a,i)=>{const y=i*rh;g+=`<circle cx="8" cy="${y+11}" r="4" fill="${col[a.key]}"/><text class="lbl" x="${LX}" y="${y+15}" clip-path="url(#lblclip)"><title>${esc(full[i])}</title>${esc(lbls[i])}</text>`;
-  a.lanes.forEach(([t,k,p])=>{if(t<t0)return;g+=`<rect class="seg" x="${x(t)-1.5}" y="${y+4}" width="4" height="14" rx="1" fill="${KIND[k]?.[1]||KIND.other[1]}" data-p="${esc(p||'')}"><title>${hms(t)} ${esc(KIND[k]?.[0]||k)}${p?' · '+esc(p):''}</title></rect>`})});
+  a.lanes.forEach(([t,k,p])=>{if(t<t0)return;g+=`<rect class="seg" x="${x(t)-1.5}" y="${y+4}" width="4" height="14" rx="1" ${segFill(k,KIND[k]?.[1]||KIND.other[1])} data-p="${esc(p||'')}"><title>${hms(t)} ${esc(KIND[k]?.[0]||k)}${p?' · '+esc(p):''}</title></rect>`})});
  // the clipPath is a backstop: even if measuring fails (e.g. a hidden box), no label can reach the plot area
  box.innerHTML=`<svg height="${H}" role="img" aria-label="${T('p.m.lanes_aria')}"><defs><clipPath id="lblclip"><rect x="0" y="0" width="${L-PAD/2}" height="${H}"/></clipPath></defs>${g}</svg>`;
- box.querySelectorAll('rect.seg').forEach(r=>r.onclick=()=>{const p=r.dataset.p;if(!p)return;focusPath=p;
-  const s=p.split('/');for(let i=1;i<s.length;i++)open.add(s.slice(0,i).join('/'));tree(col);
-  const el=[...$('#tree').querySelectorAll('[data-path]')].find(e=>e.dataset.path===p);if(el)el.scrollIntoView({block:'center'})})}
+ box.querySelectorAll('rect.seg').forEach(r=>r.onclick=()=>goTree(r.dataset.p,col))}
 function tree(col){
- const hit={},now={},ed={},cnt={};
- for(const a of D.agents){a.touches.forEach(t=>{(hit[t.path]??=new Set()).add(a.key);if(t.edit)ed[t.path]=1;
+ const hit={},now={},ed={},cnt={},srch={},sopen=new Set();
+ // issue #15: a search scope (Grep/Glob path) gets its own hollow mark only: no bold, no bar, no count on folders,
+ // never styles the files under it; its parent folders open so the mark can be seen
+ for(const a of D.agents){a.touches.forEach(t=>{if(t.kind==='search'){(srch[t.path]??=[]).push([a,t]);
+   const s=t.path.split('/');for(let i=1;i<s.length;i++)sopen.add(s.slice(0,i).join('/'));return}
+  (hit[t.path]??=new Set()).add(a.key);if(t.edit)ed[t.path]=1;
   const s=t.path.split('/');for(let i=1;i<=s.length;i++){const k=s.slice(0,i).join('/');cnt[k]=(cnt[k]||0)+1}});
   if(a.status==='running'&&a.where)(now[a.where]??=new Set()).add(a.key)}
+ const scope=p=>{const L=srch[p];if(!L)return '';const by=new Map();for(const [a,t] of L)(by.get(a.key)??by.set(a.key,[]).get(a.key)).push(T('p.m.scope',{tool:t.tool,agent:a.type,t:fmtHMS(t.t)}));
+  return `<span class="dots">${[...by].map(([k,ls])=>`<i class="ho" style="border-color:${col[k]}" title="${esc(ls.slice(-5).join('\n'))}"></i>`).join('')}</span>`};
  const mx=Math.max(1,...Object.values(cnt)),q=$('#q').value.trim().toLowerCase();
  const match=new Set();if(q)for(const e of D.tree)if(!e.more&&e.path.toLowerCase().includes(q)){const s=e.path.split('/');for(let i=1;i<=s.length;i++)match.add(s.slice(0,i).join('/'))}
  const kids={};for(const e of D.tree){const i=e.path.lastIndexOf('/'),par=i<0?'':e.path.slice(0,i);(kids[par]??=[]).push(e)}
@@ -264,15 +280,39 @@ function tree(col){
   return `<span class="cost" title="${t}">${tk(c.tokens)}${c.later?` ×${c.later} → ${tk(c.carried)}`:''}${c.pp!=null&&c.pp>=0.05?` ≈${c.pp}%p`:''}</span>`};
  const render=par=>`<ul class="tree${par?'':' root'}">`+(kids[par]||[]).filter(e=>!q||e.more?!q:match.has(e.path)).map(e=>{
   if(e.more)return `<li class="k">${T('p.m.more',{n:e.more})}</li>`;
-  const nm=esc(e.path.split('/').pop()),cls=(cnt[e.path]?'hot ':'')+(ed[e.path]?'ed ':'')+(focusPath===e.path?'focus':'');
-  if(!e.dir)return `<li class="f ${cls}" data-path="${esc(e.path)}">${nm}${heat(e.path)}${dots(e.path)}${cost(e.path,false)}</li>`;
-  const o=(q&&match.has(e.path))||cnt[e.path]||open.has(e.path);
-  return `<li><details data-p="${esc(e.path)}"${o?' open':''}><summary class="f ${cls}" data-path="${esc(e.path)}">${nm}/${heat(e.path)}${dots(e.path)}${cost(e.path,true)}</summary>${o?render(e.path):''}</details></li>`}).join('')+'</ul>';
+  const nm=esc(e.path.split('/').pop()),cls=(cnt[e.path]?'hot ':'')+(ed[e.path]?'ed ':'')+(srch[e.path]&&!cnt[e.path]?'sr ':'')+(focusPath===e.path?'focus':'');
+  if(!e.dir)return `<li class="f ${cls}" data-path="${esc(e.path)}">${nm}${heat(e.path)}${dots(e.path)}${scope(e.path)}${cost(e.path,false)}</li>`;
+  const o=(q&&match.has(e.path))||cnt[e.path]||sopen.has(e.path)||open.has(e.path);
+  return `<li><details data-p="${esc(e.path)}"${o?' open':''}><summary class="f ${cls}" data-path="${esc(e.path)}">${nm}/${heat(e.path)}${dots(e.path)}${scope(e.path)}${cost(e.path,true)}</summary>${o?render(e.path):''}</details></li>`}).join('')+'</ul>';
  $('#tree').innerHTML=D.tree.length?render(''):`<p class="empty">${T('p.m.no_tree')}</p>`;
  $('#tree').querySelectorAll('details').forEach(d=>d.ontoggle=()=>{const was=open.has(d.dataset.p);d.open?open.add(d.dataset.p):open.delete(d.dataset.p);if(d.open&&!was&&!d.querySelector('ul'))tree(col)})}
+function goTree(p,col){if(!p)return;focusPath=p;
+ const s=p.split('/');for(let i=1;i<s.length;i++)open.add(s.slice(0,i).join('/'));tree(col);
+ const el=[...$('#tree').querySelectorAll('[data-path]')].find(e=>e.dataset.path===p);if(el)el.scrollIntoView({block:'center'})}
+// issue #16 (ADR-0007): only UI read or edited in the window - an HTML file, a route URL, desktop elements
+function uiPanel(col){
+ const U=D.ui||{},ag={};D.agents.forEach(a=>ag[a.key]=a);
+ const who=m=>T('p.m.ui_mark',{tool:m.tool,agent:ag[m.a]?ag[m.a].type:'',t:fmtHMS(m.t)});
+ const mk=ms=>{const by=new Map();for(const m of ms)(by.get(m.a)??by.set(m.a,[]).get(m.a)).push(who(m));
+  return `<span class="dots">${[...by].map(([k,ls])=>`<i style="background:${col[k]||'var(--muted)'}" title="${esc(ls.slice(-5).join('\n'))}"></i>`).join('')}</span>`};
+ const nodes=ns=>ns.map(n=>`<div class="un${n.on?' on':''}" style="padding-left:${n.d*12}px">${n.on?'☑':'☐'} <span class="k">${esc(n.type)}</span> <span class="mono">${esc(n.name)}</span>${n.aid&&n.aid!==n.name?` <span class="k mono">#${esc(n.aid)}</span>`:''}</div>`).join('');
+ let h='';
+ for(const w of U.web||[]){const m=w.marks.at(-1);
+  h+=`<div class="pg on ui" data-go="${esc(m.path)}"><div class="uh">${mk(w.marks)}<span><span class="mono${w.edit?' ued':''}">${w.edit?'✎ ':'👁 '}${esc(w.route)}</span> <span class="k">${T('p.m.ui_k_'+w.kind)}</span></span></div>
+  <div class="k">${w.kind==='html'?'':w.files.map(f=>`<span class="mono">${esc(f)}</span>`).join(', ')+' · '}${esc(who(m))}</div></div>`}
+ for(const d of U.desktop||[]){const m=d.marks.at(-1);
+  h+=`<div class="pg on ui" data-go="${esc(m.path)}"><div class="uh">${mk(d.marks)}<span><span class="mono${d.edit?' ued':''}">${d.edit?'✎ ':'👁 '}${esc(d.file)}</span> <span class="k">${T('p.m.ui_k_'+d.kind)}</span></span></div>
+  <div class="k">${esc(who(m))}</div>${nodes(d.nodes)||`<div class="k">${T('p.m.ui_no_nodes')}</div>`}</div>`}
+ if(!h)h=`<p class="empty">${T(U.has_ui?'p.m.ui_none_touched':'p.m.ui_none_found')}</p>`;
+ const X=U.uia;
+ if(X)h+=`<div class="pg"><b>${T('p.m.uia_h')}</b> `+(X.past?`<span class="k">${T('p.m.uia_past')}</span>`:!X.window?`<span class="k">${T(X.pending?'p.m.uia_pending':X.error?'p.m.uia_err':'p.m.uia_none')}</span>`:
+  `<span class="mono">${esc(X.window)}</span> <span class="k">${T('p.m.uia_meta',{pid:X.pid,by:X.by==='path'?T('p.m.uia_by_path'):T('p.m.uia_by_title'),ms:X.ms})}</span>${nodes(X.nodes)}`)+'</div>';
+ else if(U.has_desktop)h+=`<p class="k">${T('p.m.uia_off')}</p>`;
+ $('#pages').innerHTML=h;
+ $('#pages').querySelectorAll('[data-go]').forEach(e=>e.onclick=()=>goTree(e.dataset.go,col))}
 function pagesFeats(col){
- const usedPg=new Set(),usedF={};D.agents.forEach(a=>a.touches.forEach(t=>{if(t.page)usedPg.add(t.page);t.features.forEach(i=>(usedF[i]??=new Set()).add(a.key))}));
- $('#pages').innerHTML=D.pages.length?D.pages.map(p=>`<div class="pg ${usedPg.has(p.route)?'on':''}"><span class="mono">${esc(p.route)}</span> <span class="k">${esc(p.file)}</span></div>`).join(''):`<p class="empty">${T('p.m.no_pages')}</p>`;
+ const usedF={};D.agents.forEach(a=>a.touches.forEach(t=>{t.features.forEach(i=>(usedF[i]??=new Set()).add(a.key))}));
+ uiPanel(col);
  const day=ms=>fmtMD(ms)+' '+fmtHM(ms);
  const docf=(D.docs||[]).filter(d=>d.total).map(d=>`<div class="k"><span class="mono">${esc(d.doc)}</span> ${T('p.m.done_n',{done:d.done,total:d.total})}${d.left===0?T('p.m.doc_done'):d.ok?T('p.m.doc_eta',{left:d.left,p50:day(d.eta_p50),p85:day(d.eta_p85)})+` <span class="badge">${T('p.est')}</span>`:T('p.m.doc_few',{n:d.steps})}</div>`).join('');
  $('#feats').innerHTML=docf+(D.features.length?D.features.map((f,i)=>`<div class="ft ${usedF[i]?'on':''}"><div><b>${esc(f.title)}</b> ${[...(usedF[i]||[])].map(k=>`<span class="sw" style="background:${col[k]}"></span>`).join('')}</div>

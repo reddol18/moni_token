@@ -6,11 +6,15 @@ Writes OUT_DIR/projects/** (fake Claude Code logs), OUT_DIR/home/usage.db and OU
 The scenario contains the patterns moni_token explains: a long conversation with many tool calls,
 a large session resumed after a long idle gap (cache rewrite), parallel sessions, and big tool results.
 The report language is --lang, else the MONI_TOKEN_LANG environment variable, else English.
+It also writes OUT_DIR/work/shop-site (a tiny fake site) worked on by a main session and a subagent just before the
+demo's "now", for the agent map screenshot: run the map with MONI_TOKEN_HOME / MONI_TOKEN_PROJECTS set to
+OUT_DIR/home and OUT_DIR/projects and open the printed ?at= link.
 """
 import argparse
 import json
 import os
 import random
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -56,22 +60,28 @@ def uid() -> str:
 class Session:
     """One conversation. Context grows with every tool result; each call re-reads it from the cache."""
 
-    def __init__(self, project: str, sid: str, ctx: int = 18_000, model: str = "claude-opus-5"):
+    def __init__(self, project: str, sid: str, ctx: int = 18_000, model: str = "claude-opus-5",
+                 cwd: str | None = None, path: Path | None = None, agent: str | None = None):
         self.project, self.sid, self.ctx, self.model = project, sid, ctx, model
-        self.path = OUT / "projects" / f"E--work-{project}" / f"{sid}.jsonl"
+        self.cwd, self.agent = cwd or f"E:\\work\\{project}", agent
+        self.path = path or OUT / "projects" / f"E--work-{project}" / f"{sid}.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lines: list[dict] = []
         self.last: datetime | None = None
 
     def base(self, t: datetime) -> dict:
-        return {"uuid": uid(), "timestamp": iso(t), "sessionId": self.sid, "cwd": f"E:\\work\\{self.project}",
-                "isSidechain": False, "entrypoint": "cli"}
+        d = {"uuid": uid(), "timestamp": iso(t), "sessionId": self.sid, "cwd": self.cwd,
+             "isSidechain": self.agent is not None, "entrypoint": "cli"}
+        if self.agent:
+            d["agentId"] = self.agent
+        return d
 
     def human(self, t: datetime) -> None:
         self.lines.append({**self.base(t), "type": "user", "message": {"role": "user", "content": "(demo)"}})
         self.ctx += 300
 
-    def call(self, t: datetime, tool: str | None = None, result_tokens: int = 0, out: int = 400) -> None:
+    def call(self, t: datetime, tool: str | None = None, result_tokens: int = 0, out: int = 400,
+             inp: dict | None = None) -> None:
         idle = self.last is not None and (t - self.last) > timedelta(hours=1)
         new = 600 + rnd.randint(0, 400)
         cr, c1 = (0, self.ctx + new) if idle else (self.ctx, 0)
@@ -79,7 +89,7 @@ class Session:
         tid = "toolu_" + uid()
         content = [{"type": "text", "text": "(demo)"}]
         if tool:
-            content.append({"type": "tool_use", "id": tid, "name": tool, "input": {}})
+            content.append({"type": "tool_use", "id": tid, "name": tool, "input": inp or {}})
         self.lines.append({**self.base(t), "type": "assistant", "requestId": "req_" + uid(),
                            "message": {"id": "msg_" + uid(), "model": self.model, "role": "assistant",
                                        "content": content, "stop_reason": "tool_use" if tool else "end_turn",
@@ -137,7 +147,57 @@ def scenario() -> list[Session]:
         ss.append(s)
     e = Session("web-app", "e5f6a7b8-0001"); e.work(d0 + timedelta(days=2, hours=16, minutes=10), 30, 80); ss.append(e)
     f = Session("docs-site", "f6a7b8c9-0001"); f.work(d0 + timedelta(days=2, hours=12, minutes=0), 35, 90); ss.append(f)
-    return history(d0) + ss
+    return history(d0) + ss + map_demo()
+
+
+MAP_FILES = {   # a small static site on disk, so the agent map has a real tree (README screenshot)
+    "index.html": "<!doctype html><title>Shop</title>\n",
+    "about.html": "<!doctype html><title>About</title>\n",
+    "public/checkout/order-summary.html": "<!doctype html><title>Order summary</title>\n",
+    "src/cart.js": "export const count = items => items.length;\n",
+    "src/api.js": "export const get = url => fetch(url);\n",
+    "src/menu.js": "export const open = () => {};\n",
+    "styles/site.css": "body { margin: 0 }\n",
+    "tests/cart.test.js": "// demo\n",
+    "docs/PLAN.md": "# Plan\n\n## Cart badge\n\n- [x] count items in `src/cart.js`\n- [ ] show the badge in `index.html`\n"
+                    "- [ ] style it in `styles/site.css`\n\n## Checkout\n\n- [ ] totals in `order-summary.html`\n",
+}
+
+
+def map_demo() -> list[Session]:
+    """A main session and a running subagent on MAP_FILES in the 30 minutes before NOW: reads, edits (one of them on
+    an HTML page, for the Working UI panel), Grep scopes (search marks) and lane-only calls."""
+    root = OUT / "work" / "shop-site"
+    for rel, text in MAP_FILES.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    (root / ".git").mkdir(exist_ok=True)
+    cwd = str(root)
+    logdir = OUT / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    sid, aid = "m1a2b3c4-0001", "a7c1e9f2d4b60003"
+    a = lambda p: {"file_path": str(root / p)}
+    g = lambda p: {"path": str(root / p), "pattern": "(demo)"}
+    main = Session("shop-site", sid, ctx=40_000, cwd=cwd, path=logdir / f"{sid}.jsonl")
+    sub = Session("shop-site", sid, ctx=12_000, cwd=cwd, path=logdir / sid / "subagents" / f"agent-{aid}.jsonl",
+                  agent=aid, model="claude-sonnet-5")
+    main_steps = [("Read", a("docs/PLAN.md")), ("Grep", g("src")), ("Read", a("src/cart.js")), ("Bash", None),
+                  ("Read", a("src/api.js")), ("Agent", None), ("Read", a("public/checkout/order-summary.html")),
+                  ("Grep", g("styles")), ("Bash", None), ("Read", a("tests/cart.test.js"))]
+    sub_steps = [("Read", a("index.html")), ("Read", a("src/cart.js")), ("Edit", a("src/cart.js")),
+                 ("Grep", g("public")), ("Edit", a("index.html")), ("Read", a("styles/site.css")),
+                 ("Edit", a("styles/site.css")), ("Bash", None), ("Edit", a("index.html"))]
+    for s, steps, start, every in ((main, main_steps, NOW - timedelta(minutes=29), 75),
+                                   (sub, sub_steps, NOW - timedelta(minutes=17), 50)):
+        t = start
+        s.human(t)
+        for i in range(int((NOW - start).total_seconds()) // every - 1):
+            t += timedelta(seconds=every + rnd.randint(-every // 4, every // 4))
+            tool, inp = steps[i % len(steps)]
+            s.call(t, tool, rnd.randint(300, 4000), inp=inp)
+    meta = sub.path.with_name(f"agent-{aid}.meta.json")
+    desc = "홈 화면에 장바구니 배지 표시" if ARGS.lang.lower().startswith("ko") else "Show the cart badge on the home page"
+    meta.write_text(json.dumps({"agentType": "general-purpose", "description": desc}), encoding="utf-8")
+    return [main, sub]
 
 
 def history(d0: datetime, days: int = 42) -> list[Session]:
@@ -187,6 +247,7 @@ def main() -> None:
     for s in detect(con, ms(NOW - timedelta(days=3)), ms(NOW), SpikeParams()):
         record_spike(con, s, ms(NOW), lang=lang)
     print(write_report(con, OUT / "report.html", now_ms=ms(NOW), days=3, lang=lang))
+    print(f"agent map: /?at={ms(NOW)}&paused=1&window=30&project=shop-site")
 
 
 if __name__ == "__main__":

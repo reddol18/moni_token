@@ -83,8 +83,10 @@ def test_state_maps_agents_to_tree_pages_and_features(logs, con, project):
     paths = {e["path"] for e in st["tree"]}
     assert "app/(store)/cart/page.tsx" in paths and not any(p.startswith("node_modules") for p in paths)
     assert "vendor" in paths and not any(p.startswith("vendor/other") for p in paths)
-    routes = {p["route"]: p["kind"] for p in st["pages"]}
+    routes = {p["route"]: p["kind"] for p in agentmap.pages(st["tree"])}                  # the lookup table
     assert routes == {"/": "next-app", "/cart": "next-app", "/about": "next-pages"}      # api/ is not a page
+    assert [(p["route"], p["files"]) for p in st["pages"]] == [("/cart", ["app/(store)/cart/CartList.tsx"])]
+    assert st["ui"]["has_ui"] and st["ui"]["uia"] is None                                 # only touched UI (#16)
     feats = {f["title"]: f for f in st["features"]}
     assert set(feats) == {"Checkout", "Tax"}                                              # "Notes" links nothing
     assert feats["Checkout"]["paths"] == ["app/(store)/cart", "src/lib/price.py"] and feats["Checkout"]["done"] == 1
@@ -102,6 +104,69 @@ def test_state_maps_agents_to_tree_pages_and_features(logs, con, project):
     assert "Find cart bugs" not in dump                                                    # never stored
 
 
+def test_each_tool_kind_touch_and_search_scopes_are_not_reads(logs, con, project):
+    """Issue #15: what each tool contributes as a touch. A Grep/Glob scope is a `search` touch: not a read, not the
+    agent's position, no page/feature, and it never adds the files under it."""
+    now = int(time.time() * 1000)
+    r = str(project)
+    nb = project / "docs/n.ipynb"
+    nb.write_text("{}", encoding="utf-8")
+    t = lambda s: iso(now - s * 1000)
+    logs.write(logs.path(session="s1"),
+               _call("k1", t(100), r, [("Read", {"file_path": r + "/README.md"})]),
+               _call("k2", t(90), r, [("Edit", {"file_path": r + "/src/lib/price.py", "old_string": SECRET,
+                                                "new_string": SECRET}),
+                                      ("Write", {"file_path": r + "/src/lib/new.py", "content": SECRET}),
+                                      ("MultiEdit", {"file_path": r + "/src/lib/tax.py", "edits": []}),
+                                      ("NotebookEdit", {"notebook_path": str(nb), "new_source": SECRET})]),
+               _call("k3", t(80), r, [("Bash", {"command": f"cat {r}/README.md"}),
+                                      ("PowerShell", {"command": SECRET}),
+                                      ("Grep", {"pattern": SECRET}),                       # no scope: no touch
+                                      ("Glob", {"pattern": "src/**/*.py"})]),             # pattern is not kept
+               _call("k4", t(70), r, [("Grep", {"pattern": SECRET, "path": r + "/app/(store)/cart",
+                                                "glob": "*.tsx"}),
+                                      ("Glob", {"pattern": "*.md", "path": r + "/docs"})]))
+    sub = logs.path(session="s1", agent="sf")       # a subagent whose cwd is a subfolder of the project
+    logs.write(sub, _call("k5", t(60), r + "/src", [("Read", {"file_path": "lib/tax.py"}),
+                                                     ("Grep", {"pattern": SECRET, "path": "lib"})], agent="sf"))
+    collect(con, logs.root)
+    st = agentmap.build_state(con, logs.root, now)
+    main = next(a for a in st["agents"] if a["agent"] is None)
+    got = [(x["tool"], x["path"], x["kind"]) for x in main["touches"]]
+    assert got == [("Read", "README.md", "read"), ("Edit", "src/lib/price.py", "edit"),
+                   ("Write", "src/lib/new.py", "edit"), ("MultiEdit", "src/lib/tax.py", "edit"),
+                   ("NotebookEdit", "docs/n.ipynb", "edit"), ("Grep", "app/(store)/cart", "search"),
+                   ("Glob", "docs", "search")]
+    assert all(x["edit"] == (x["kind"] == "edit") for x in main["touches"])
+    assert main["where"] == "docs/n.ipynb"                    # the last read/edit target, not the later search scope
+    grep = next(x for x in main["touches"] if x["tool"] == "Grep")
+    assert grep["page"] is None and grep["features"] == []    # the cart page and "Checkout" are not worked on
+    kinds = [k for _, k, _ in main["lanes"]]
+    assert kinds == ["read", "edit", "edit", "edit", "edit", "run", "run", "search", "search", "search", "search"]
+    sa = next(a for a in st["agents"] if a["agent"] == "sf")
+    assert [(x["path"], x["kind"]) for x in sa["touches"]] == [("src/lib/tax.py", "read"), ("src/lib", "search")]
+    assert sa["where"] == "src/lib/tax.py"
+    assert not any(x["path"].startswith("app/(store)/cart/") for a in st["agents"] for x in a["touches"])
+    assert SECRET not in json.dumps(st, ensure_ascii=False)
+
+
+def test_tool_kind_and_touch_kind():
+    assert [agentmap.tool_kind(n) for n in ("Read", "Grep", "Glob", "LS", "Edit", "Bash", "mcp__x__y", "Foo")] == \
+        ["read", "search", "search", "search", "edit", "run", "mcp", "other"]
+    assert [agentmap.touch_kind(n) for n in ("Read", "NotebookRead", "Grep", "Glob", "Write", "NotebookEdit",
+                                             "mcp__fs__read")] == \
+        ["read", "read", "search", "search", "edit", "edit", "read"]
+
+
+def test_page_draws_search_scopes_apart():
+    """Issue #15: hollow lane mark, own legend entries, scope tooltip, search kept out of the counts."""
+    for lang, words in (("en", ("Search", "searched only (Grep/Glob scope)")), ("ko", ("검색", "검색만 함(Grep/Glob 범위)"))):
+        html = mapserver.page(lang)
+        for s in ("t.kind==='search'", "fill=\"none\" stroke=", 'id="tlg"', "class=\"f sr\"", "'p.m.scope'",
+                  "sopen.has(e.path)", "findLast(x=>x.kind!=='search')") + words:
+            assert s in html, (lang, s)
+
+
 def test_past_moment_ignores_later_calls(logs, con, project):
     r = str(project)
     t0 = int(time.time() * 1000) - 86_400_000
@@ -110,6 +175,43 @@ def test_past_moment_ignores_later_calls(logs, con, project):
     collect(con, logs.root)
     a = agentmap.build_state(con, logs.root, t0 + 30_000)["agents"]
     assert len(a) == 1 and a[0]["calls"] == 1 and a[0]["status"] == "running" and a[0]["where"] == "README.md"
+
+
+@pytest.mark.parametrize("how", ["git", "launch", "common"])
+def test_root_stays_at_project_when_main_cds_into_a_subfolder(logs, con, project, how):
+    """Issue #17: fund_agent's main `cd output/screening` made that the root and every docs/ touch vanished."""
+    r = str(project)
+    sub = str(project / "output" / "screening")
+    (project / "output" / "screening").mkdir(parents=True)
+    if how == "git":
+        (project / ".git").mkdir()
+    folder = agentmap._encode_dir(r) if how == "launch" else "E--proj"
+    now = int(time.time() * 1000)
+    logs.write(logs.path(project=folder), _call("r1", iso(now - 300_000), r, [("Read", {"file_path": r + "/docs/PLAN.md"})]),
+               _call("r2", iso(now - 60_000), sub, [("Edit", {"file_path": sub + "/x.csv"})]))
+    if how == "git":   # with a git root, even a main that only ever ran in the subfolder maps to the project
+        logs.write(logs.path(project="E--other", session="s9"),
+                   _call("r3", iso(now - 30_000), sub, [("Read", {"file_path": sub + "/x.csv"})], session="s9"))
+    collect(con, logs.root)
+    st = agentmap.build_state(con, logs.root, now, project_dir=folder)
+    assert st["project"]["root"] == r
+    got = [(t["path"], t["kind"]) for a in st["agents"] for t in a["touches"]]
+    assert ("docs/PLAN.md", "read") in got and ("output/screening/x.csv", "edit") in got
+    if how == "git":
+        assert agentmap.project_root(con, "E--other", now) == r
+
+
+def test_root_at_a_past_moment_uses_cwds_up_to_then(logs, con, tmp_path):
+    """Issue #17: ?at= must not use cwds the main session only reached later."""
+    a, b = tmp_path / "w" / "a", tmp_path / "w" / "b"
+    a.mkdir(parents=True)
+    b.mkdir(parents=True)
+    t0 = int(time.time() * 1000) - 7_200_000
+    logs.write(logs.path(), _call("p1", iso(t0), str(a), [("Read", {"file_path": str(a / "x.py")})]),
+               _call("p2", iso(t0 + 3_600_000), str(b), [("Read", {"file_path": str(b / "y.py")})]))
+    collect(con, logs.root)
+    assert agentmap.build_state(con, logs.root, t0 + 60_000, live=False)["project"]["root"] == str(a)
+    assert agentmap.build_state(con, logs.root, t0 + 3_660_000, live=False)["project"]["root"] == str(tmp_path / "w")
 
 
 def test_huge_folder_does_not_hide_the_rest_and_touched_paths_always_show(tmp_path, monkeypatch):

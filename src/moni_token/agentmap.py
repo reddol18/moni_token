@@ -2,12 +2,33 @@
 
 Three views of one project, all deterministic:
 - tree     : the real directory tree under the session's cwd, with the paths agents touched
-- pages    : UI routes found from real files (Next.js app/ and pages/, static *.html)
+- ui       : the UI read or edited in the window (an HTML file, a route URL, desktop elements; uimap, issue #16)
 - features : headings of a contract document (PLAN/SPEC/task md), linked to files only through paths and file
              names written in that document; checklist items give the done count
 
 From the logs only tool names and project-relative target paths are used. The directory tree, page list and
 contract headings are read from the project folder at request time and are not stored.
+
+What each tool contributes (issue #15). `call_tools.path` comes from parser._tool_path: the first of the input keys
+file_path / notebook_path / path that lies inside the session's cwd, made relative to it; nothing else of the input
+is kept (no patterns, globs, commands).
+
+    tool                      input key used         touch kind  bold/red  heat bar  `where`  page/feature
+    Read, NotebookRead        file_path/notebook_path read        bold      yes       yes      yes
+    Edit, Write, MultiEdit    file_path              edit        red       yes       yes      yes
+    NotebookEdit              notebook_path          edit        red       yes       yes      yes
+    Grep                      path (folder or file)  search      no        no        no       no
+    Glob                      path (folder); the     search      no        no        no       no
+                              pattern is not kept
+    LS (older versions)       path                   search      no        no        no       no
+    Grep/Glob without path    -                      no touch (a lane mark only)
+    Bash, PowerShell, ...     (command, not kept)    no touch (a lane mark only)
+    mcp__* with a `path` key  path                   read        bold      yes       yes      yes
+
+A search touch is drawn as a dashed name with hollow agent dots and a "Grep scope · agent · time" tooltip; it never
+styles the files under the scope and never opens or counts on its folders (only the parents open to show it).
+Subfolder cwd (subagents): the stored path is relative to that call's cwd and is re-rooted here with
+rel_path(_join(cwd, path), root); a path that falls outside the project root is dropped (lane mark only).
 """
 import json
 import ntpath
@@ -19,6 +40,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from . import uia, uimap
 from .blocks import compute_blocks
 from .calibrate import estimate
 from .chunks import measure_results
@@ -34,16 +56,22 @@ RUNNING_MS = 2 * 60_000
 DESC_MAX = 80
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 CONTRACT_GLOBS = ("docs/PLAN.md", "PLAN.md", "SPEC.md", "docs/SPEC.md", "docs/tasks/*.md")
-PAGE_EXT = (".tsx", ".jsx", ".ts", ".js", ".mdx")
 
 
-KINDS = (("edit", EDIT_TOOLS), ("read", {"Read", "Grep", "Glob", "NotebookRead", "LS"}),
+SEARCH_TOOLS = {"Grep", "Glob", "LS"}
+KINDS = (("edit", EDIT_TOOLS), ("search", SEARCH_TOOLS), ("read", {"Read", "NotebookRead"}),
          ("run", {"Bash", "PowerShell", "BashOutput", "TaskOutput", "KillShell"}), ("web", {"WebFetch", "WebSearch"}),
          ("agent", {"Agent", "Task", "Workflow", "SendMessage"}))
 
 
 def tool_kind(name: str | None) -> str:
+    """Timeline lane kind of a tool call (every call, with or without a path)."""
     return next((k for k, names in KINDS if name in names), "mcp" if (name or "").startswith("mcp__") else "other")
+
+
+def touch_kind(name: str | None) -> str:
+    """What a tool call with a project path means for that path (issue #15): edit, search (a scope) or read."""
+    return "edit" if name in EDIT_TOOLS else "search" if name in SEARCH_TOOLS else "read"
 
 
 def _join(root: str, rel: str) -> str:
@@ -54,14 +82,57 @@ def _join(root: str, rel: str) -> str:
 def active_projects(con: sqlite3.Connection, since_ms: int, until_ms: int) -> list[dict]:
     rows = con.execute("SELECT project_dir, project, MAX(ts_ms), COUNT(*) FROM calls WHERE ts_ms >= ? AND ts_ms <= ? "
                        "GROUP BY project_dir ORDER BY MAX(ts_ms) DESC", (since_ms, until_ms)).fetchall()
-    return [dict(project_dir=d, name=n or d, last_ms=t, calls=c, root=project_root(con, d)) for d, n, t, c in rows]
+    return [dict(project_dir=d, name=n or d, last_ms=t, calls=c, root=project_root(con, d, until_ms))
+            for d, n, t, c in rows]
 
 
-def project_root(con: sqlite3.Connection, project_dir: str) -> str | None:
-    """The cwd that main sessions of this project used most recently (subagents can run in subfolders)."""
-    r = con.execute("SELECT cwd FROM calls WHERE project_dir=? AND cwd IS NOT NULL "
-                    "ORDER BY (agent_id IS NULL) DESC, ts_ms DESC LIMIT 1", (project_dir,)).fetchone()
-    return r[0] if r else None
+def _pmod(p: str):
+    return ntpath if (":" in p[:3] or "\\" in p) else posixpath
+
+
+def _encode_dir(cwd: str) -> str:
+    """Claude Code's log folder name for a launch cwd: every character other than a letter or digit becomes '-'."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def _git_root(path: str) -> str | None:
+    mod = _pmod(path)
+    cur = path
+    while True:
+        if os.path.exists(mod.join(cur, ".git")):
+            return cur
+        up = mod.dirname(cur)
+        if not up or up == cur:
+            return None
+        cur = up
+
+
+def project_root(con: sqlite3.Connection, project_dir: str, now_ms: int | None = None) -> str | None:
+    """The project folder, from the cwds main sessions used up to `now_ms` (issue #17).
+
+    A main session can `cd` into a subfolder (fund_agent -> output/screening); the root must not follow it. The base
+    is the launch cwd (the main cwd whose encoding is the log folder name), else the shortest common ancestor of the
+    main cwds; the root is the git root above the base if there is one, else the base. Subagent cwds are used only
+    when no main call is known. Only calls up to `now_ms` count, so `?at=` gets the root of that moment."""
+    until = now_ms if now_ms is not None else 1 << 62
+    cwds = [r[0] for r in con.execute(
+        "SELECT cwd, MAX(ts_ms) m FROM calls WHERE project_dir=? AND cwd IS NOT NULL AND agent_id IS NULL "
+        "AND ts_ms <= ? GROUP BY cwd ORDER BY m DESC", (project_dir, until))]
+    if not cwds:
+        cwds = [r[0] for r in con.execute(
+            "SELECT cwd, MAX(ts_ms) m FROM calls WHERE project_dir=? AND cwd IS NOT NULL AND ts_ms <= ? "
+            "GROUP BY cwd ORDER BY m DESC", (project_dir, until))]
+    if not cwds:
+        return None
+    base = next((c for c in cwds if _encode_dir(c) == project_dir), None)
+    if base is None:
+        try:
+            base = _pmod(cwds[0]).commonpath(cwds)
+        except ValueError:   # different drives, or mixed absolute/relative
+            base = cwds[0]
+        if base and _pmod(base).dirname(base) == base:   # a drive root says nothing about the project
+            base = cwds[0]
+    return _git_root(base) or base
 
 
 def _meta(projects: Path, project_dir: str, session_id: str) -> dict[str, dict]:
@@ -126,8 +197,10 @@ def agents(con: sqlite3.Connection, projects: Path, project_dir: str, root: str,
         a["lanes"].append([ts, tool_kind(name), p])   # swimlane segment (issue #5)
         if p is None:
             continue
-        a["touches"].append(dict(t=ts, path=p, edit=name in EDIT_TOOLS, tool=name))
-        a["where"] = p
+        kind = touch_kind(name)
+        a["touches"].append(dict(t=ts, path=p, edit=kind == "edit", kind=kind, tool=name))
+        if kind != "search":   # a search scope is not where the agent works (issue #15)
+            a["where"] = p
     out = sorted(per.values(), key=lambda a: (a["status"] != "running", -a["last_ms"]))
     for i, a in enumerate(out):
         a["key"] = f"a{i}"
@@ -182,39 +255,8 @@ def tree(root: Path, must: set[str] = frozenset()) -> list[dict]:
 
 
 def pages(entries: list[dict]) -> list[dict]:
-    """UI routes from real files. `dir` is the folder whose files belong to the page (None: only the file)."""
-    out = []
-    for e in entries:
-        p = e["path"]
-        if e["dir"]:
-            continue
-        parts = p.split("/")
-        name = parts[-1]
-        stem, ext = posixpath.splitext(name)
-        if "app" in parts and stem == "page" and ext in PAGE_EXT:        # Next.js app router
-            i = len(parts) - 1 - parts[::-1].index("app")
-            segs = [s for s in parts[i + 1:-1] if not (s.startswith("(") and s.endswith(")"))]
-            out.append(dict(route="/" + "/".join(segs), file=p, dir="/".join(parts[:-1]), kind="next-app"))
-        elif "pages" in parts and ext in PAGE_EXT and not stem.startswith("_"):   # Next.js pages router
-            i = len(parts) - 1 - parts[::-1].index("pages")
-            segs = parts[i + 1:-1] + ([] if stem == "index" else [stem])
-            if segs[:1] == ["api"]:
-                continue
-            out.append(dict(route="/" + "/".join(segs), file=p, dir=None, kind="next-pages"))
-        elif ext == ".html":
-            out.append(dict(route=p, file=p, dir=None, kind="html"))
-    return sorted(out, key=lambda x: x["route"])
-
-
-def page_of(path: str, pgs: list[dict]) -> dict | None:
-    best = None
-    for pg in pgs:
-        if path == pg["file"]:
-            return pg
-        d = pg["dir"]
-        if d is not None and (path == d or path.startswith(d + "/")) and (best is None or len(d) > len(best["dir"])):
-            best = pg
-    return best
+    """The route lookup table (every page-like file); the panel lists only touched UI (uimap, issue #16)."""
+    return uimap.route_table(entries)
 
 
 TICK = re.compile(r"`([^`\n]+)`")
@@ -282,8 +324,9 @@ def axis_ticks(since_ms: int, now_ms: int, window_min: int) -> list[int]:
 
 
 def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_dir: str | None = None,
-                window_min: int = 30, live: bool = True) -> dict:
-    """`live` is False when looking at a past moment (?at=)."""
+                window_min: int = 30, live: bool = True, map_params=None) -> dict:
+    """`live` is False when looking at a past moment (?at=). `map_params` (settings.MapParams) turns on the opt-in
+    Windows UI Automation tree (ADR-0007)."""
     since = now_ms - window_min * 60_000
     projs = active_projects(con, since, now_ms)
     for p in projs:   # default: the project with subagents active right now, then the most recent one
@@ -295,19 +338,20 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
     cur = next((p for p in projs if p["project_dir"] == project_dir), None) or \
         next((p for p in projs if p["name"] == project_dir), first)
     state = dict(now=now_ms, window_min=window_min, projects=projs, project=cur, agents=[], tree=[], pages=[],
-                 features=[], window=None, costs={}, docs=[], ticks=axis_ticks(since, now_ms, window_min))
+                 ui=dict(has_ui=False, has_desktop=False, web=[], desktop=[], uia=None), features=[], window=None, costs={}, docs=[],
+                 ticks=axis_ticks(since, now_ms, window_min))
     if not cur:
         return state
     root = cur["root"]
     ags = agents(con, projects, cur["project_dir"], root, since, now_ms, live) if root else []
     entries = tree(Path(root), {t["path"] for a in ags for t in a["touches"]}) if root else []
-    pgs = pages(entries)
     feats = features(Path(root), entries) if root else []
+    # issue #16: the UI panel lists only UI read or edited in the window; the route table is the lookup
+    ui = uimap.panel(uimap.Lookup(Path(root) if root else None, entries), ags)
+    ui["uia"] = _uia(root, ui, live, map_params)
     for a in ags:
-        for t in a["touches"]:
-            pg = page_of(t["path"], pgs)
-            t["page"] = pg["route"] if pg else None
-            t["features"] = features_of(t["path"], feats)
+        for t in a["touches"]:   # a search scope does not work on a feature (issue #15)
+            t["features"] = features_of(t["path"], feats) if t["kind"] != "search" else []
         a["touches"] = a["touches"][-200:]
         a["lanes"] = a["lanes"][-400:]
     costs = file_costs(con, cur["project_dir"], root, since, now_ms, ags)
@@ -318,9 +362,19 @@ def build_state(con: sqlite3.Connection, projects: Path, now_ms: int, project_di
             a["forecast"] = forecast_agent(con, a["type"], cur["project_dir"], n, now_ms - first, usd)
     docs = sorted({f["doc"] for f in feats})
     state["docs"] = [dict(doc=d, **forecast_checklist(con, root, d, now_ms)) for d in docs] if root else []
-    state.update(agents=ags, tree=entries, pages=pgs, features=feats, costs=costs,
+    state.update(agents=ags, tree=entries, pages=ui["web"], ui=ui, features=feats, costs=costs,
                  window=window_shares(con, now_ms, projs, ags, cur["project_dir"]))
     return state
+
+
+def _uia(root: str | None, ui: dict, live: bool, mp) -> dict | None:
+    """The opt-in OS UI tree (ADR-0007): None when off or when the project has no desktop UI and no window title is
+    set; only read live (a past window cannot be read)."""
+    if not (mp and mp.uia and root and (ui["has_desktop"] or mp.uia_window)):
+        return None
+    if not live:
+        return dict(window=None, past=True)
+    return uia.mark(uia.read_window(root, mp.uia_window or None, background=True), uimap.touched_names(ui["desktop"]))
 
 
 def run_so_far(con: sqlite3.Connection, session_id: str, agent_id: str, now_ms: int) -> tuple[int, int, float]:

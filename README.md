@@ -38,7 +38,7 @@ It does three things:
 2. **Warns while it happens** — a short `⚠ +4.0%p · cause` segment on Claude Code's status line, also in front of
    [claude-hud](https://github.com/jarrodwatts/claude-hud) if you use it.
 3. **Shows where agents are working** — a live map of the main session and its subagents on the project's real
-   source tree, UI pages and the features of a contract document.
+   source tree, the UI they touch (HTML pages, web routes, desktop windows) and the features of a contract document.
 
 Principles:
 
@@ -251,28 +251,47 @@ uv run moni-token map          # http://127.0.0.1:4990/
 
 ![Live agent map](docs/img/agent-map.png)
 
-<sub>This repository's own map during development:
-- a running subagent (general-purpose) with its progress forecast;
-- the main agent marked "Progress forecast: not for main";
-- edited files in red, each touched file with its token cost.</sub>
+<sub>Synthetic demo data (`scripts/demo_report.py`), paused at one moment:
+- a running subagent (general-purpose) and the main agent, marked "Progress forecast: not for main";
+- edited files in red, each touched file with its token cost; Grep scopes as hollow marks in the timeline and
+  dashed folders with hollow dots in the tree;
+- "UI being worked on" lists only the two HTML pages that were read or edited.</sub>
 
 Shows where each agent (main session and subagents) is working right now:
 
 - **Agent timeline**: one row per agent over the selected period, one mark per tool call, coloured by kind
-  (read / edit / run / web / subagent / MCP). Click a mark to jump to its file in the tree. Grid lines sit on round
+  (read / search / edit / run / web / subagent / MCP; a Grep/Glob search is an outlined mark). Click a mark to jump to its file in the tree. Grid lines sit on round
   clock times (every 5 / 15 / 30 min), so they slide with the marks; a mark's tooltip gives its time to the second.
 - **Pause**: the `⏸ Pause` button (or the space bar) freezes every panel at the current moment; hover, click-to-tree,
   search, period and project changes keep working on that moment, ◀ ▶ step by one minute, and `Link to this moment`
   links to it (`?at=…&project=…&window=…`). `▶ Live` returns to live. `?paused=1` opens the map already paused.
 - **Source tree**: the real directory tree. Files an agent read or edited in the period are bold (red when edited),
   a bar shows how often each file or folder was touched, and a ringed dot marks where each running agent is now.
+  A folder (or file) that was only the scope of a Grep/Glob search gets a dashed underline and a hollow dot instead
+  (tooltip: `Grep scope · main · 23:25:19`): a search is not work on that folder, so it is not bold, not counted in
+  the bar, not the agent's current position, and the files under it are not marked. A legend sits above the tree.
   Large folders are cut at 200 entries; touched files always show. A search box filters the tree.
   Next to each touched file: **what it cost in tokens**, e.g. `9k ×65 → 352k` — its tool result added 9k tokens to
   the context and was re-read by 65 later calls, so the conversation carried 352k tokens of it (≈ %p of the 5-hour
   limit when calibrated). Folders show the sum; each agent shows its heaviest file. Same measurement as
   `moni-token chunks`.
-- **UI pages**: routes found from real files (Next.js `app/` and `pages/`, static `*.html`), highlighted when an agent
-  touches their source.
+- **Project root**: the git root of the main session's folder (else the launch folder, else the common ancestor of the
+  main session's folders), using only calls up to the moment shown. A main session that `cd`s into a subfolder does
+  not shrink the tree, and `?at=` uses the folders of that moment.
+- **UI being worked on** ([ADR-0007](docs/adr/0007-ui-panel-touched-ui.md)): only UI that an agent **read or edited**
+  in the period (a Grep/Glob scope does not count), each with the agent's colour dot and `tool · agent · time`; click
+  an entry to show its file in the tree. What an entry is depends on how the project renders:
+  - static HTML: the `*.html` file itself;
+  - web app: the route URL a touched file belongs to — Next.js `app/` (route file, its folder, files it imports),
+    Next.js `pages/`, SvelteKit `src/routes/` and Flask/Jinja (`@app.route` views that `render_template` the touched
+    template); imports are followed one level (`./`, `../`, `@/`, `$lib/`);
+  - desktop: XAML (`x:Name` / `AutomationId`) and WinForms (`*.Designer.cs`) element trees with the touched elements
+    checked — all of them when the UI file itself is touched, the ones its code-behind mentions otherwise.
+  Opt-in: `[map] uia = true` in `~/.moni_token/config.toml` also shows the **running window's Windows UI Automation
+  tree** (a window whose program lives in the project folder, or `uia_window = "title part"`), with elements whose
+  AutomationId matches a touched element checked. It is read through PowerShell (no extra dependency) in the
+  background, at most every 15 s, and element names are shown only, never stored. With nothing touched the panel says
+  "No UI touched in this window", and "No UI found in this project" when there is none.
 - **Features**: sections of a contract document (`docs/PLAN.md`, `PLAN.md`, `SPEC.md`, `docs/tasks/*.md`), linked to
   files only through paths or unique file names written in backticks in that section; `- [x]` items give progress.
 
@@ -354,8 +373,15 @@ uv run python scripts/demo_report.py demo --lang en
 start demo\report.html
 ```
 
-This writes fake logs with all the patterns above and builds a report from them (`--lang ko` for Korean). The
-dashboard screenshots in this README come from it.
+This writes fake logs with all the patterns above and builds a report from them (`--lang ko` for Korean). It also
+writes a tiny fake site (`demo\work\shop-site`) worked on by a main session and a subagent, for the map:
+
+```powershell
+$env:MONI_TOKEN_HOME="demo\home"; $env:MONI_TOKEN_PROJECTS="demo\projects"; uv run moni-token map --port 4991
+# open the ?at=… link the script printed, on http://127.0.0.1:4991/
+```
+
+The dashboard and map screenshots in this README come from it.
 
 ## Limitations
 
