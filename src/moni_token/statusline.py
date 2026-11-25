@@ -77,6 +77,58 @@ def warning(now_ms: int, lang: str | None = None) -> str:
         return ""
 
 
+STALE_MS = 12 * 3_600_000   # same as cloud.STALE_MS (not imported: cloud.py is heavier than this hot path needs)
+
+
+def _cloud_enabled() -> bool:
+    p = config.data_dir() / "config.toml"
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "cloud" not in text:
+        return False
+    import tomllib
+    try:
+        c = tomllib.loads(text).get("cloud")
+    except tomllib.TOMLDecodeError:
+        return False
+    return isinstance(c, dict) and c.get("enabled") is True
+
+
+def _money(v: float, cur: str) -> str:
+    return f"${v:,.2f}" if cur == "USD" else f"{v:,.2f} {cur}"
+
+
+def aws_segment(now_ms: int, lang: str | None = None) -> str:
+    """AWS month-to-date cost from the cache written by `moni_token map` (issue #18, ADR-0008), or "".
+    Never calls AWS. Hidden when the feature is off or the last successful refresh is older than 12 hours."""
+    try:
+        if not _cloud_enabled():
+            return ""
+        st = json.loads((config.data_dir() / "cloud_cost.json").read_text(encoding="utf-8"))
+        m, b = st.get("metric") or None, st.get("budget") or None
+        fresh = lambda x: x and now_ms - x.get("fetched_ms", 0) <= STALE_MS
+        from .i18n import resolve_lang, t
+        lg = lang or resolve_lang()
+        if fresh(m):
+            amount, cur, ts = m["amount"], m.get("currency", "USD"), m.get("ts_ms") or m["fetched_ms"]
+        elif fresh(b):
+            amount, cur, ts = b["actual"], b.get("unit", "USD"), b.get("updated_ms") or b["fetched_ms"]
+        else:
+            errs = [e for e in (st.get("err") or {}).values() if e]
+            recent = any(now_ms - e.get("at_ms", 0) <= STALE_MS for e in errs)
+            return t("cloud.unknown", lg) if recent and not (m or b) else ""
+        fc = (t("cloud.sl_fc", lg, amount=_money(b["forecast"], b.get("unit", "USD")))
+              if fresh(b) and b.get("forecast") is not None else "")
+        mins = max(0, (now_ms - ts) // 60_000)
+        age = (t("cloud.age_m", lg, n=mins) if mins < 60 else t("cloud.age_h", lg, n=round(mins / 60))
+               if mins < 48 * 60 else t("cloud.age_d", lg, n=round(mins / 1440)))
+        return t("cloud.sl", lg, amount=_money(amount, cur), fc=fc, age=age)
+    except Exception:
+        return ""
+
+
 def _opts(argv: list[str]) -> dict:
     out, i = {}, 0
     while i + 1 < len(argv):
@@ -94,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     raw = sys.stdin.buffer.read()
     obs = None
     now = int(time.time() * 1000)
-    warn = warning(now, opts.get("lang"))
+    warn = " · ".join(x for x in (warning(now, opts.get("lang")), aws_segment(now, opts.get("lang"))) if x)
     try:
         d = json.loads(raw or b"{}")
         obs = extract(d)

@@ -107,14 +107,18 @@ def build_data(con: sqlite3.Connection, now_ms: int, days: int = 7, lang: str = 
         seen = json.loads((config.data_dir() / "statusline.seen").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         seen = None
+    from . import cloud   # issue #18: the static file shows values only; the server adds the settings form
+    from .settings import load_cloud_params
     return dict(generated=now_ms, start=start, end=now_ms, five_hour=fh, seven_day=sd, events=events, statusline=seen,
-                digest=dg, chunks=ch, header=header(con, now_ms, lang=lang))
+                digest=dg, chunks=ch, header=header(con, now_ms, lang=lang),
+                cloud=cloud.view(load_cloud_params(), now_ms, served=False))
 
 
 def render(data: dict, map_base: str = MAP_BASE, lang: str = "ko") -> str:
     payload = json.dumps(dict(data, map_base=map_base), ensure_ascii=False).replace("</", "<\\/")
     return (fill(TEMPLATE, lang).replace("/*HEAD*/", head(t("p.title.usage", lang), USAGE_CSS, lang))
             .replace("/*SHELL*/", shell_html("usage", map_base, lang)).replace("/*UPLOT*/", uplot_js())
+            .replace("/*CLOUDFORM*/", CLOUD_FORM_JS if (data.get("cloud") or {}).get("served") else "")
             .replace("/*DATA*/null", payload))
 
 
@@ -160,6 +164,23 @@ details summary{cursor:pointer;color:var(--text-secondary)}.tl{font-size:12px}.t
 .vd .st{padding:1px 7px;border-radius:4px;border:1px solid var(--border);margin-right:6px;font-weight:600;color:var(--text-primary)}
 .vd .st.high{border-color:var(--critical)}.vd .st.low{border-color:var(--good)}
 .pace{color:var(--text-secondary);font-size:12px;margin:0 0 4px}.pace .warn{color:var(--critical);font-weight:600}
+.cl-top{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:10px}
+.cl-st{padding:1px 8px;border-radius:4px;border:1px solid var(--border);font-weight:700;color:var(--text-secondary)}
+.cl-st.on{border-color:var(--good);color:var(--good)}
+.cl-vals{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px 16px;margin:0 0 12px}
+.cl-vals .k{color:var(--text-secondary);font-size:12px}.cl-vals .v{font-size:18px;font-weight:600}
+.cl-form{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:6px 0}
+.cl-form label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--text-secondary)}
+.cl-form input{font:inherit;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface-1);
+color:var(--text-primary);width:220px}.cl-form input.wide{width:320px}
+.cl-form button{font:inherit;padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);
+color:var(--text-primary);cursor:pointer}.cl-form button.pri{border-color:var(--line)}.cl-form button:disabled{opacity:.5;cursor:default}
+ul.cl-steps{list-style:none;padding:0;margin:8px 0}.cl-steps li{padding:3px 0}.cl-steps .m{display:inline-block;width:44px;font-weight:700}
+.cl-steps .ok{color:var(--good)}.cl-steps .no{color:var(--critical)}.cl-steps .na{color:var(--muted)}.cl-steps .h{color:var(--text-secondary);margin-left:44px}
+.cl-msg{min-height:1.5em;color:var(--text-secondary)}.cl-msg.bad{color:var(--critical)}
+.cl-guide ol{margin:6px 0;padding-left:22px}.cl-guide li{margin:4px 0}.cl-guide pre{font-family:var(--mono);font-size:12px;
+background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;overflow-x:auto;margin:6px 0}
+.cl-why{color:var(--text-secondary);font-size:12px}.cl-why p{margin:4px 0}code{background:var(--surface-2);padding:0 4px;border-radius:3px}
 """
 
 TEMPLATE = r"""/*HEAD*/<body>/*SHELL*/<main>
@@ -181,6 +202,8 @@ TEMPLATE = r"""/*HEAD*/<body>/*SHELL*/<main>
 <h2>[[p.u.h_events]]</h2>
 <div class="card scroll"><table id="events"><thead><tr><th>[[p.u.th_time]]</th><th>[[p.u.th_rise]]</th><th>[[p.u.th_cause]]</th><th class="n">[[p.u.th_save]]</th><th>[[p.u.th_share]]</th><th>[[p.u.th_map]]</th></tr></thead><tbody></tbody></table>
 <p class="note">[[p.u.events_note]]</p></div>
+<h2 id="cloud-h">[[p.c.h]] <span class="vd">[[p.c.k]]</span></h2>
+<div class="card" id="cloud"></div>
 </main>
 <script id="data" type="application/json">/*DATA*/null</script>
 <script>/*UPLOT*/</script>
@@ -289,6 +312,70 @@ function openEvent(id,scroll){
   <td>${c.tr==='human'?T('p.u.tr_human'):c.tr==='tool_result'?T('p.u.tr_tool')+(c.rb>=100000?` ${Math.round(c.rb/1024)}KB`:'')+(c.img?' '+T('p.u.tr_img'):''):''}</td><td>${esc(c.tools.join(', '))}</td></tr>`).join('')+'</table></div></details>';
  h+=`<p class="note">${esc(e.note||'')}</p>`;
  const d=el('tr',{class:'detail'},`<td colspan="6">${h}</td>`);tr.after(d);if(scroll)tr.scrollIntoView({behavior:'smooth',block:'center'})}
+// issue #18 (ADR-0008): AWS cost, opt-in. The static file shows values and a note; the live page adds the form.
+let CL=D.cloud||null,CK=null,MSG=null;const FV=Object.assign({aws_profile:'',budget_name:'',aws_path:''},CL&&CL.settings||{});
+const money=(v,u)=>v==null?'—':(!u||u==='USD'?'$'+v.toFixed(2):v.toFixed(2)+' '+u);
+const agoC=ms=>{const m=Math.max(0,Math.round((Date.now()-ms)/60000));return m<60?T('p.c.ago_m',{n:m}):m<2880?T('p.c.ago_h',{n:Math.round(m/60)}):T('p.c.ago_d',{n:Math.round(m/1440)})};
+const clCur=C=>{const M=C.metric,B=C.budget;return M?[M.amount,M.currency,M.ts_ms||M.fetched_ms,M.fetched_ms]:B?[B.actual,B.unit,B.updated_ms||B.fetched_ms,B.fetched_ms]:null};
+const hint=(code,C)=>window.I18N['p.c.hint.'+code]!=null?T('p.c.hint.'+code,{code,cap:fmtN(C.cap)}):T('p.c.hint.Error',{code:esc(code)});
+const usedN=U=>(U.cloudwatch||0)+(U.budgets||0)+(U.sts||0);
+$('#tiles').insertAdjacentHTML('beforeend','<span id="cltile" style="display:contents"></span>');
+function clTile(C){if(!C||!C.enabled)return '';const c=clCur(C);if(!c)return '';const B=C.budget;
+ return `<div class="tile"><div class="k">${T('p.c.tile')}</div><div class="v">${money(c[0],c[1])}</div><div class="d">${B&&B.forecast!=null?T('p.c.fc')+' '+money(B.forecast,B.unit)+' · ':''}${agoC(c[2])}</div></div>`}
+function stepLine(s,C){const m=s.ok===true?['ok','OK']:s.ok===false?['no','FAIL']:['na','—'],v=s.value||(s.id==='calls'?Object.assign({cap:C.cap,used:C.calls},C.expected):null);let d='';
+ if(s.id==='aws'&&s.path)d=`<span class="mono">${esc(s.path)}</span>`;
+ if(s.id==='profile'&&s.ok)d=T('p.c.d_profile');
+ if(s.id==='metric'&&v)d=`${T('p.c.mtd')} <b>${money(v.amount,v.currency)}</b> · ${agoC(v.ts_ms)}`;
+ if(s.id==='budget'&&v)d=`${T('p.c.mtd')} ${money(v.actual,v.unit)} · ${T('p.c.fc')} <b>${v.forecast!=null?money(v.forecast,v.unit):T('p.c.no_fc')}</b>${v.limit!=null?' · '+T('p.c.limit')+' '+money(v.limit,v.unit):''}`;
+ if(s.id==='calls'&&v)d=T('p.c.d_calls',{metric:fmtN(v.metric),budget:fmtN(v.budget),total:fmtN(v.total),cap:fmtN(v.cap),used:fmtN(usedN(v.used||{}))});
+ return `<li><span class="m ${m[0]}">${m[1]}</span>${T('p.c.s_'+s.id)}${d?' · '+d:''}${s.code?`<div class="h">${hint(s.code,C)}</div>`:''}</li>`}
+function cloudCard(){const C=CL,box=$('#cloud');if(!C){box.innerHTML='';return}
+ $('#cltile').innerHTML=clTile(C);
+ const on=C.enabled,c=clCur(C),B=C.budget,E=C.expected,used=usedN(C.calls||{});
+ let h=`<div class="cl-top"><span class="cl-st${on?' on':''}">${on?T('p.c.on'):T('p.c.off')}</span><span>${on?T('p.c.state_on',{m:C.metric_min,h:C.budget_h}):T('p.c.state_off')}</span></div>`;
+ if(c){const stale=Date.now()-c[3]>C.stale_ms;
+  h+=`<div class="cl-vals"><div><div class="k">${T('p.c.mtd')}</div><div class="v">${money(c[0],c[1])}</div></div>`+
+   `<div><div class="k">${T('p.c.fc')}</div><div class="v">${B&&B.forecast!=null?money(B.forecast,B.unit):'—'}</div>${B&&B.forecast==null?`<div class="k">${T('p.c.no_fc')}</div>`:''}</div>`+
+   (B&&B.limit!=null?`<div><div class="k">${T('p.c.limit')}</div><div class="v">${money(B.limit,B.unit)}</div></div>`:'')+
+   `<div><div class="k">${T('p.c.age')}</div><div class="v">${agoC(c[2])}</div>${stale?`<div class="k">${T('p.c.stale')}</div>`:''}</div>`+
+   `<div><div class="k">${T('p.c.calls')} (${esc(C.month)})</div><div class="v">${T('p.c.calls_v',{used:fmtN(used),cap:fmtN(C.cap)})}</div></div></div>`}
+ if(on)for(const k of ['metric','budget']){const e=C.err&&C.err[k];if(e)h+=`<p class="cl-msg bad">${T('p.c.err',{code:esc(e.code),t:fmtDT(C.next[k])})} ${hint(e.code,C)}</p>`}
+ if(!C.served||typeof cloudForm!=='function'){box.innerHTML=h+`<p class="note">${T('p.c.static',{url:'<code>http://127.0.0.1:4990/usage</code>'})}</p>`;return}
+ cloudForm(box,h,C,on)}
+/*CLOUDFORM*/
+cloudCard();
 draw();addEventListener('resize',()=>{clearTimeout(window._r);window._r=setTimeout(draw,120)});
+if(location.hash==='#cloud')$('#cloud-h').scrollIntoView();
 const hid=/^#event-(\d+)$/.exec(location.hash);if(hid)openEvent(+hid[1],true);
 </script></body></html>"""
+
+# issue #18: only the page served by `moni_token map` can change settings, so only it carries this code (the static
+# report makes no request at all)
+CLOUD_FORM_JS = r"""function cloudForm(box,h,C,on){
+ const E=C.expected,ck=C.check,okNow=ck&&ck.ok&&ck.matches;
+ h+=`<div class="cl-form"><label>${T('p.c.f_profile')}<input id="cl-profile" maxlength="64" autocomplete="off" spellcheck="false" value="${esc(FV.aws_profile)}"></label>`+
+  `<label>${T('p.c.f_budget')}<input id="cl-budget" maxlength="100" autocomplete="off" spellcheck="false" value="${esc(FV.budget_name)}"></label>`+
+  `<label>${T('p.c.f_path')}<input id="cl-path" class="wide" maxlength="260" autocomplete="off" spellcheck="false" placeholder="${esc(T('p.c.f_path_ph'))}" value="${esc(FV.aws_path)}"></label>`+
+  `<button type="button" id="cl-check" class="pri">${T('p.c.b_check')}</button>`+
+  (on?`<button type="button" id="cl-save">${T('p.c.b_save')}</button><button type="button" id="cl-toggle">${T('p.c.b_off')}</button>`:
+   `<button type="button" id="cl-toggle"${okNow||(CK&&CK.ok)?'':' title="'+esc(T('p.c.need_check'))+'"'}>${T('p.c.b_on')}</button>`)+`</div>`;
+ h+=`<div class="k">${C.aws_found?T('p.c.found',{path:`<span class="mono">${esc(C.aws_found)}</span>`}):T('p.c.notfound')}</div>`;
+ h+=`<div class="cl-msg${MSG&&MSG[1]?' bad':''}" id="cl-msg">${MSG?MSG[0]:!on&&!okNow?T('p.c.need_check'):ck?T(ck.ok?'p.c.passed':'p.c.failed',{t:fmtDT(ck.at_ms)}):''}</div>`;
+ const steps=CK?CK.steps:(ck&&ck.matches?ck.steps:null);if(steps)h+=`<ul class="cl-steps">${steps.map(s=>stepLine(s,C)).join('')}</ul>`;
+ const prof=esc(FV.aws_profile||'moni-token-billing');
+ h+=`<details class="cl-guide"${on?'':' open'}><summary>${T('p.c.g_h')}</summary><ol><li>${T('p.c.g1')}</li><li>${T('p.c.g2')}</li><li>${T('p.c.g3')}</li><li>${T('p.c.g4')}<pre>${esc(C.policy)}</pre></li><li>${T('p.c.g5',{profile:prof})}</li><li>${T('p.c.g6')}</li></ol>`+
+  `<div class="cl-why"><b>${T('p.c.w_h')}</b><p>${T('p.c.w1',{m:C.metric_min,h:C.budget_h,metric:fmtN(E.metric),budget:fmtN(E.budget||Math.round(720/C.budget_h))})}</p><p>${T('p.c.w2',{cap:fmtN(C.cap)})}</p><p>${T('p.c.w3')}</p><p>${T('p.c.w4')}</p><p>${T('p.c.org')}</p></div></details>`;
+ box.innerHTML=h;
+ const bind=(id,k)=>$(id).oninput=e=>{FV[k]=e.target.value;CK=null;MSG=null};
+ bind('#cl-profile','aws_profile');bind('#cl-budget','budget_name');bind('#cl-path','aws_path');
+ const busy=t=>{MSG=[t,false];$('#cl-msg').textContent=t;$('#cloud').querySelectorAll('button').forEach(b=>b.disabled=true)};
+ const errText=(s,j)=>j.error==='check_first'?T('p.c.e.check_first'):j.error==='fields'?T('p.c.e.fields',{f:esc((j.fields||[]).join(', '))}):T('p.c.e.http',{s});
+ const post=async(path,body)=>{try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Moni-Token':CL.token},body:JSON.stringify(body)});
+  const j=await r.json().catch(()=>({}));if(j.view)CL=j.view;return [r.status,j]}catch(e){return [0,{}]}};
+ $('#cl-check').onclick=async()=>{busy(T('p.c.checking'));const [s,j]=await post('/api/cloud/check',FV);
+  if(s===200){CK=j.check;MSG=[T(CK.ok?'p.c.passed':'p.c.failed',{t:fmtDT(CK.at_ms)}),!CK.ok]}else MSG=[T('p.c.refused',{e:errText(s,j)}),true];cloudCard()};
+ const save=async body=>{busy(T('p.c.saving'));const [s,j]=await post('/api/cloud/settings',body);
+  if(s===200){Object.assign(FV,CL.settings);MSG=[T('p.c.saved'),false]}else MSG=[T('p.c.refused',{e:errText(s,j)}),true];cloudCard()};
+ $('#cl-toggle').onclick=()=>save(on?{enabled:false}:Object.assign({enabled:true},FV));
+ if($('#cl-save'))$('#cl-save').onclick=()=>save(Object.assign({},FV))}
+"""

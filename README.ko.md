@@ -44,7 +44,8 @@ moni_token은 Claude Code의 로컬 로그를 읽어서 이 질문에 답합니�
 - **LLM을 부르지 않습니다.** 토큰을 아끼려는 도구가 토큰을 쓰면 안 되니까요. 판정은 모두 정해진 규칙으로 하고,
   설명 문장은 템플릿으로 만듭니다.
 - **PC 밖으로 아무것도 보내지 않습니다.** 네트워크를 쓰지 않습니다. 대시보드는 HTML 파일이고, 에이전트 지도는
-  127.0.0.1에서만 열립니다.
+  127.0.0.1에서만 열립니다. 예외는 하나, 기본으로 꺼져 있고 직접 켜야 하는 [상태줄의 AWS 비용](#선택-상태줄에-aws-비용)입니다.
+  무료 읽기 전용 AWS CLI 호출로 내 AWS 청구액을 읽고, 로컬 데이터는 보내지 않습니다([ADR-0008](docs/adr/0008-aws-cost-free-apis.md)).
 - **대화 내용을 저장하지 않습니다.** 숫자(토큰·시각·호출 수)와 메타데이터(세션 id, 프로젝트 폴더 이름, 모델,
   도구 이름, 크기, 도구가 다룬 프로젝트 기준 상대 경로 — [ADR-0004](docs/adr/0004-agent-map-paths-and-server.md))만 남깁니다.
 - **로그는 읽기만 합니다.** Claude Code의 파일을 고치거나 지우지 않습니다.
@@ -339,6 +340,7 @@ main 에이전트는 진행 예측을 하지 않습니다. 권장 구성에서 m
 | `daily` / `blocks` | 날짜별 토큰 합계 / 5시간 구간 |
 | `observe` / `calibrate` | 화면에서 본 한도 %를 입력해 보정 |
 | `spikes`, `backfill-events`, `suggest-floor` | 탐지 세부 정보와 기준값 조정 |
+| `cloud check` / `cloud status` | 선택 기능 AWS 비용: 설정 점검(무료 호출 최대 3회) / 캐시 보기(호출 없음) |
 
 모두 `uv run moni-token <명령>`으로 실행합니다.
 
@@ -353,6 +355,79 @@ window_min = 15
 realert_min = 30        # 이 시간(분) 안에는 같은 알림을 다시 띄우지 않음
 single_call_cache_write_tokens = 200000   # 호출 하나가 이만큼 캐시에 다시 쓰면 그 자체로 사건
 ```
+
+## 선택: 상태줄에 AWS 비용
+
+기본은 꺼짐입니다. 꺼져 있으면 AWS 관련 동작은 하나도 없고 프로세스도 띄우지 않습니다. 켜면 상태줄에 AWS 계정의
+이번 달 누적 예상 요금, Budgets 예상값, 데이터 나이가 나옵니다.
+
+```
+AWS $0.88 (예상 $1.08) · 2시간
+```
+
+**비용은 0입니다.** 읽기 전용 AWS CLI 작업 세 가지만 돌 수 있고, 나머지는 코드에서 거부합니다
+([ADR-0008](docs/adr/0008-aws-cost-free-apis.md)).
+
+| 호출 | 주기 | 월 호출 수 | 가격 |
+|---|---|---|---|
+| `cloudwatch get-metric-statistics` (AWS/Billing `EstimatedCharges`, us-east-1) | 10분마다 | 약 4,320 | 상시 무료 CloudWatch API 요청 100만 회 안([가격](https://aws.amazon.com/cloudwatch/pricing/)) |
+| `budgets describe-budget` (`ActualSpend`, `ForecastedSpend`) | 6시간마다 | 약 120 | 작업(action) 없는 예산은 무료([가격](https://aws.amazon.com/aws-cost-management/aws-budgets/pricing/)) |
+| `sts get-caller-identity` (위 호출에 쓸 계정 ID. 메모리에만 두고 저장하지 않음) | 시작할 때와 점검할 때 | 몇 회 | 무료 |
+
+Cost Explorer(`aws ce`, 요청당 0.01달러)와 CloudWatch `GetMetricData`(항상 유료)는 코드에서 거부하고, 어떤 코드
+경로라도 이를 부를 수 있으면 테스트가 실패합니다. 월 호출 상한(`max_calls_month`, 기본 6,000)을 넘으면 다음 달까지
+모든 호출을 멈춥니다. 무료 한도는 계정의 다른 CloudWatch API 사용과 함께 씁니다. Billing → Free Tier에서 확인하세요.
+
+갱신은 `moni-token map`의 백그라운드 스레드가 하므로 지도 작업이 도는 동안에만 동작합니다. 결과는
+`~/.moni_token/cloud_cost.json`에 씁니다(금액, 통화, 시각, 호출 수, 오류 코드. 계정 ID·키·리소스 이름은 저장하지
+않음). 상태줄은 이 파일만 읽으므로 AWS를 기다리지 않고, 데이터가 12시간보다 오래되면 숨깁니다.
+
+### 1회 설정 (직접)
+
+1. AWS CLI v2 설치: `winget install -e --id Amazon.AWSCLI` (또는 MSI). 설치 뒤 새 터미널을 엽니다.
+2. Billing and Cost Management → Billing preferences → **Receive CloudWatch billing alerts** 켜기(무료, 다시 끌 수
+   없음).
+3. Budgets → 작업·필터 없는 월간 비용 예산을 하나 만들고(있으면 재사용) 이름을 적어 둡니다. 예상값은 약 5주
+   이력이 쌓인 뒤 나옵니다.
+4. IAM → 아래 정책만 가진 사용자를 만들고 CLI용 액세스 키를 만듭니다.
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {"Effect": "Allow", "Action": ["cloudwatch:GetMetricStatistics", "aws-portal:ViewBilling"], "Resource": "*"},
+       {"Effect": "Allow", "Action": "budgets:ViewBudget",
+        "Resource": "arn:aws:budgets::ACCOUNT_ID:budget/BUDGET_NAME"}
+     ]
+   }
+   ```
+5. 별도 터미널에서 `aws configure --profile moni-token-billing` (리전 `us-east-1`, 출력 `json`). 키를 Claude나
+   대시보드에 붙여 넣지 마세요.
+6. 라이브 대시보드의 **사용량** 페이지, **AWS 비용** 카드(`http://127.0.0.1:4990/usage`)에서 프로필, 예산 이름,
+   그리고 지도 작업의 PATH에 `aws`가 없으면 `aws.exe` 전체 경로를 넣고 **점검**, 그다음 **켜기**를 누릅니다. 같은
+   설정으로 점검을 통과하기 전에는 켜기를 거부합니다.
+
+점검(`uv run moni-token cloud check`도 같음)은 단계마다 결과와 도움말을 보여 줍니다. AWS CLI 찾음, 프로필 동작,
+청구 지표 있음, 예산 찾음, 이 설정의 월 호출 수.
+
+**AWS Organizations:** 청구 지표는 관리(지불) 계정에서만 보입니다. 멤버 계정에서는 예산만 씁니다.
+
+**끄기:** 카드에서 **끄기**를 누르거나 `~/.moni_token/config.toml`의 `[cloud]`에 `enabled = false`를 넣습니다.
+설정은 그 파일에 있습니다(대시보드는 `[cloud]` 표만 다시 씁니다).
+
+```toml
+[cloud]
+enabled = true
+aws_profile = "moni-token-billing"
+budget_name = "monthly"
+aws_path = ""            # 선택. 없으면 PATH, 그다음 일반 설치 폴더
+metric_min = 10
+budget_h = 6
+max_calls_month = 6000
+```
+
+대시보드의 쓰기 엔드포인트는 자기 페이지에서 온 요청만 받습니다. 같은 호스트와 출처(127.0.0.1), 페이지에 심은
+프로세스별 토큰, 알려진 필드만 담은 JSON, 값마다 검증. 정적 `report.html`은 서버가 없어 값과 안내만 보여 줍니다.
 
 ## 내 데이터 없이 써 보기
 

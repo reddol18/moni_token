@@ -24,9 +24,9 @@ def test_no_llm_or_network_imports():
     bad = []
     for f in SRC.rglob("*.py"):
         for mod in _imports(ast.parse(f.read_text(encoding="utf-8"))):
-            if mod == "subprocess" and f.name in ("notify.py", "statusline.py", "task.py", "uia.py"):
+            if mod == "subprocess" and f.name in ("notify.py", "statusline.py", "task.py", "uia.py", "cloud.py"):
                 continue  # OS notifier / the user's own previous status line / Task Scheduler / opt-in Windows UI
-                # Automation reader (ADR-0007); all pinned by tests
+                # Automation reader (ADR-0007) / opt-in AWS CLI behind an allowlist (ADR-0008); all pinned by tests
             if any(mod == m or mod.startswith(m + ".") for m in FORBIDDEN_MODULES):
                 bad.append(f"{f.name}: {mod}")
     assert not bad, bad
@@ -48,6 +48,15 @@ def test_notifier_runs_only_os_notifier():
     assert cmd[0] in ("powershell", "osascript", "sh") and "claude" not in " ".join(cmd).lower().replace(
         "windowspowershell", "")
     assert body == "body" and "body" not in " ".join(cmd)   # text passed via env, not the command line
+
+
+def test_only_cloud_py_may_name_the_aws_cli():
+    """ADR-0008: the AWS CLI is reached only through cloud.guard; no other module builds an aws command line."""
+    for f in SRC.rglob("*.py"):
+        text = f.read_text(encoding="utf-8")
+        if f.name != "cloud.py":
+            assert "get-metric-statistics" not in text and "describe-budget" not in text, f.name
+        assert '"ce"' not in text or f.name == "cloud.py", f.name
 
 
 def test_no_claude_cli_invocation_strings():

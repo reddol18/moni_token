@@ -2,14 +2,17 @@
 
 A background thread runs the incremental collector every few seconds; each page poll reads the state from SQLite.
 """
+import hmac
 import json
+import secrets
 import threading
 import time
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import accpage, accuracy
+from . import accpage, accuracy, cloud
 from .agentmap import build_state
 from .collector import collect
 from .calibrate import estimate
@@ -17,11 +20,13 @@ from .db import connect
 from .forecast import backtest_cases, remaining_usage
 from .i18n import normalize, resolve_lang, t
 from .report import build_data, header, render
-from .settings import load_map_params
+from .settings import load_cloud_params, load_map_params, update_cloud_params, validate_cloud_fields
 from .ui import fill, head, shell_html
 
 HOST = "127.0.0.1"
 RECORD_S = 20
+MAX_BODY = 4096
+POST_PATHS = ("/api/cloud/check", "/api/cloud/settings")
 
 
 def page(lang: str = "ko") -> str:
@@ -42,10 +47,67 @@ def _backtest(con) -> list[dict]:
 
 def make_handler(db: Path, projects: Path, lang: str | None = None):
     """`lang` fixes the default language; None resolves it per request (config.toml, then the OS locale).
-    `?lang=` on any request wins (issue #12)."""
+    `?lang=` on any request wins (issue #12).
+    POST (issue #18, the AWS cost settings): same Host and Origin as this server, the per-process token embedded in
+    the served usage page (`Handler.token`), JSON only, known fields only."""
+    token = secrets.token_urlsafe(32)
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):   # keep the console quiet
             pass
+
+        def _json(self, code: int, obj: dict) -> None:
+            self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+        def _post_allowed(self) -> str | None:
+            """None if the request may change settings, else the reason it may not."""
+            port = self.server.server_address[1]
+            hosts = (f"127.0.0.1:{port}", f"localhost:{port}")
+            host = self.headers.get("Host") or ""
+            if host not in hosts:
+                return "host"
+            if (self.headers.get("Origin") or "") not in tuple("http://" + h for h in hosts):
+                return "origin"
+            if (self.headers.get("Sec-Fetch-Site") or "same-origin") != "same-origin":
+                return "origin"
+            if not hmac.compare_digest((self.headers.get("X-Moni-Token") or "").encode(), token.encode()):
+                return "token"
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                return "content_type"
+            return None
+
+        def do_POST(self):
+            u = urlparse(self.path)
+            if u.path not in POST_PATHS:
+                return self._send(404, b"not found", "text/plain")
+            why = self._post_allowed()
+            if why:
+                return self._json(403, dict(error=why))
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            if n < 0 or n > MAX_BODY:
+                return self._json(413, dict(error="size"))
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                return self._json(400, dict(error="json"))
+            vals, bad = validate_cloud_fields(body)
+            if u.path == "/api/cloud/check" and "enabled" in vals:
+                bad.append("enabled")
+            if bad:
+                return self._json(400, dict(error="fields", fields=sorted(set(bad))))
+            now = int(time.time() * 1000)
+            cur = load_cloud_params()
+            want = replace(cur, **vals)
+            if u.path == "/api/cloud/check":
+                res = cloud.check(want, now)
+                return self._json(200, dict(check=res, view=cloud.view(cur, now, True, token)))
+            if want.enabled and not cloud.check_passed(want, now):
+                return self._json(409, dict(error="check_first", view=cloud.view(cur, now, True, token)))
+            p = update_cloud_params(vals)
+            return self._json(200, dict(view=cloud.view(p, now, True, token)))
 
         def _send(self, code: int, body: bytes, ctype: str) -> None:
             self.send_response(code)
@@ -68,7 +130,10 @@ def make_handler(db: Path, projects: Path, lang: str | None = None):
             if u.path == "/usage":   # the usage report, from live data (issue #4)
                 con = connect(db)
                 try:
-                    html = render(build_data(con, int(time.time() * 1000), lang=lg), map_base="", lang=lg)
+                    now = int(time.time() * 1000)
+                    data = build_data(con, now, lang=lg)
+                    data["cloud"] = cloud.view(load_cloud_params(), now, served=True, token=token)   # issue #18
+                    html = render(data, map_base="", lang=lg)
                 finally:
                     con.close()
                 return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
@@ -98,6 +163,7 @@ def make_handler(db: Path, projects: Path, lang: str | None = None):
                 return self._send(200, json.dumps(st, ensure_ascii=False).encode("utf-8"),
                                   "application/json; charset=utf-8")
             return self._send(404, b"not found", "text/plain")
+    Handler.token = token
     return Handler
 
 
@@ -119,6 +185,8 @@ def serve(db: Path, projects: Path, port: int = 4990, interval_s: float = 5.0, l
         con.close()
 
     threading.Thread(target=collector, daemon=True).start()
+    # issue #18 (ADR-0008): AWS cost refresher; reads [cloud] each round and starts no process while it is off
+    threading.Thread(target=cloud.run_forever, args=(stop,), daemon=True).start()
     srv = ThreadingHTTPServer((HOST, port), make_handler(db, projects, lang))
     print(f"agent map: http://{HOST}:{port}/  (Ctrl+C to stop)")
     try:

@@ -45,7 +45,8 @@ Principles:
 - **No LLM calls.** A tool meant to save tokens should not spend them. Every judgement is a fixed rule, and every
   sentence comes from a template.
 - **Nothing leaves your PC.** No network access. The dashboard is a static HTML file; the agent map is served on
-  127.0.0.1 only.
+  127.0.0.1 only. The one exception is opt-in and off by default: [AWS cost in the status line](#optional-aws-cost-in-the-status-line)
+  reads your own AWS bill through free, read-only AWS CLI calls and sends no local data ([ADR-0008](docs/adr/0008-aws-cost-free-apis.md)).
 - **No conversation text is stored.** Only numbers (tokens, times, call counts) and metadata (session id, project
   folder name, model, tool names, sizes, and the project-relative path a tool worked on — [ADR-0004](docs/adr/0004-agent-map-paths-and-server.md)).
 - **Logs are read-only.** It never changes or deletes Claude Code's files.
@@ -351,6 +352,7 @@ and collects new log lines every 5 seconds. From the logs it keeps only tool nam
 | `daily` / `blocks` | Token totals per day / 5-hour windows |
 | `observe` / `calibrate` | Enter limit % you saw, for calibration |
 | `spikes`, `backfill-events`, `suggest-floor` | Detection details and tuning |
+| `cloud check` / `cloud status` | Optional AWS cost: test the setup (at most 3 free calls) / show the cache (no call) |
 
 Run any of them as `uv run moni-token <command>`.
 
@@ -365,6 +367,82 @@ window_min = 15
 realert_min = 30        # no repeat notification within this many minutes
 single_call_cache_write_tokens = 200000   # one call re-caching this much is a spike by itself
 ```
+
+## Optional: AWS cost in the status line
+
+Off by default. When it is off, nothing AWS-related runs: no process is started. When it is on, the status line
+shows the month-to-date estimated charges of your AWS account, the Budgets forecast and the age of the data:
+
+```
+AWS $0.88 (fc $1.08) · 2h
+```
+
+**It costs nothing.** Only three read-only AWS CLI operations can run, and the code refuses anything else
+([ADR-0008](docs/adr/0008-aws-cost-free-apis.md)):
+
+| Call | How often | Calls a month | Price |
+|---|---|---|---|
+| `cloudwatch get-metric-statistics` (AWS/Billing `EstimatedCharges`, us-east-1) | every 10 min | ~4,320 | inside the always-free 1,000,000 CloudWatch API requests ([pricing](https://aws.amazon.com/cloudwatch/pricing/)) |
+| `budgets describe-budget` (`ActualSpend`, `ForecastedSpend`) | every 6 h | ~120 | budgets without actions are free ([pricing](https://aws.amazon.com/aws-cost-management/aws-budgets/pricing/)) |
+| `sts get-caller-identity` (the account ID for the call above; kept in memory, never stored) | at start and on Check | a few | free |
+
+Cost Explorer (`aws ce`, $0.01 per request) and CloudWatch `GetMetricData` (always charged) are refused in code, and a
+test fails if any code path could call them. A monthly cap (`max_calls_month`, default 6,000) stops every call until
+next month. The free tier is shared with your account's other CloudWatch API use: see Billing → Free Tier.
+
+The refresher is a background thread of `moni-token map`, so it runs only while the map task runs. It writes
+`~/.moni_token/cloud_cost.json` (amounts, currency, timestamps, call counts, error codes; never the account ID, keys
+or resource names). The status line only reads that file, so it never waits for AWS, and hides the segment when the
+data is older than 12 hours.
+
+### One-time setup (manual)
+
+1. Install AWS CLI v2: `winget install -e --id Amazon.AWSCLI` (or the MSI), then open a new terminal.
+2. Billing and Cost Management → Billing preferences → turn on **Receive CloudWatch billing alerts** (free, cannot be
+   turned off again).
+3. Budgets → create one monthly cost budget with no actions and no filters (or reuse one) and note its name. The
+   forecast appears after about 5 weeks of history.
+4. IAM → create a user with only this policy, then an access key for the CLI:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {"Effect": "Allow", "Action": ["cloudwatch:GetMetricStatistics", "aws-portal:ViewBilling"], "Resource": "*"},
+       {"Effect": "Allow", "Action": "budgets:ViewBudget",
+        "Resource": "arn:aws:budgets::ACCOUNT_ID:budget/BUDGET_NAME"}
+     ]
+   }
+   ```
+5. In a separate terminal: `aws configure --profile moni-token-billing` (region `us-east-1`, output `json`). Never paste
+   the keys into Claude or into the dashboard.
+6. Open the live dashboard, **Usage** page, card **AWS cost** (`http://127.0.0.1:4990/usage`), enter the profile, the
+   budget name and, if `aws` is not on the map task's PATH, the full path to `aws.exe`. Press **Check**, then
+   **Turn on**. Turning on is refused until a Check with the same settings has passed.
+
+Check (also `uv run moni-token cloud check`) shows each step with a hint: AWS CLI found, profile works, billing metric
+present, budget found, and the calls per month for these settings.
+
+**AWS Organizations:** only the management (payer) account sees the billing metric. In a member account the budget is
+used alone.
+
+**Turning it off:** press **Turn off** on the card, or set `enabled = false` under `[cloud]` in
+`~/.moni_token/config.toml`. The settings live there (the dashboard writes only the `[cloud]` table):
+
+```toml
+[cloud]
+enabled = true
+aws_profile = "moni-token-billing"
+budget_name = "monthly"
+aws_path = ""            # optional; else PATH, then the usual install folders
+metric_min = 10
+budget_h = 6
+max_calls_month = 6000
+```
+
+The dashboard's write endpoint accepts only requests from its own page: same host and origin (127.0.0.1), a
+per-process token embedded in the page, JSON with the known fields only, each validated. The static `report.html` has
+no server and only shows the values and a note.
 
 ## Try it without your own data
 

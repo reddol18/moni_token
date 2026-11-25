@@ -102,8 +102,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("map", help="live agent map on http://127.0.0.1:<port>/ (source tree, UI pages, features)")
     p.add_argument("--port", type=int, default=4990)
     p.add_argument("--interval", type=float, default=5.0, help="seconds between log collections")
+    p = sub.add_parser("cloud", help="AWS cost in the status line (opt-in, free APIs only; ADR-0008): "
+                                     "`check` makes at most 3 free calls, `status` makes none")
+    p.add_argument("action", choices=["check", "status"])
     a = ap.parse_args(argv)
 
+    if a.cmd == "cloud":
+        return cloud_main(a.action, resolve_lang(a.lang))
     if a.cmd == "map":
         from .mapserver import serve
         serve(a.db or config.db_path(), a.projects or config.claude_projects_dir(), a.port, a.interval,
@@ -267,6 +272,49 @@ def main(argv: list[str] | None = None) -> int:
         v = suggest_floor(con, now_ms())
         print("no data" if v is None else f"p75 of active 15-min windows (7 days): ${v:.2f}")
     return 0
+
+
+def cloud_main(action: str, lang: str) -> int:
+    """issue #18. Prints amounts and codes only: never the account ID."""
+    from . import cloud
+    from .settings import load_cloud_params
+    p = load_cloud_params()
+    st = cloud.load_state(now_ms())
+    used = sum(st["calls"].values())
+    if action == "status":
+        print(t("cli.cloud.status", lang, state=t("p.c.on" if p.enabled else "p.c.off", lang), used=used,
+                cap=p.max_calls_month))
+        m, b = st["metric"], st["budget"]
+        if m:
+            print(f"  EstimatedCharges {m['amount']:.2f} {m['currency']}  ({fmt(m['ts_ms'])})")
+        if b:
+            fc = f"{b['forecast']:.2f}" if b["forecast"] is not None else "-"
+            print(f"  Budget actual {b['actual']:.2f} / forecast {fc} {b['unit']}  ({fmt(b['fetched_ms'])})")
+        for k, e in st["err"].items():
+            if e:
+                print(f"  {k}: {e['code']} x{e['fails']}")
+        return 0
+    print(t("cli.cloud.head", lang))
+    r = cloud.check(p, now_ms())
+    for s in r["steps"]:
+        mark = "OK  " if s["ok"] is True else "FAIL" if s["ok"] is False else "--  "
+        v, d = s.get("value"), ""
+        if s["id"] == "aws" and s.get("path"):
+            d = s["path"]
+        elif s["id"] == "metric" and v:
+            d = f"{v['amount']:.2f} {v['currency']} ({fmt(v['ts_ms'])})"
+        elif s["id"] == "budget" and v:
+            d = f"actual {v['actual']:.2f}, forecast {v['forecast'] if v['forecast'] is not None else '-'} {v['unit']}"
+        elif s["id"] == "calls" and v:
+            d = t("p.c.d_calls", lang, metric=v["metric"], budget=v["budget"], total=v["total"], cap=v["cap"],
+                  used=sum(v["used"].values()))
+        print(f"{mark} {t('p.c.s_' + s['id'], lang)}" + (f": {d}" if d else ""))
+        if s["code"]:
+            key = f"p.c.hint.{s['code']}"
+            print("     " + (t(key, lang, code=s["code"], cap=p.max_calls_month) if t(key, lang) != key
+                             else t("p.c.hint.Error", lang, code=s["code"])))
+    print(t("cli.cloud.result_ok" if r["ok"] else "cli.cloud.result_fail", lang))
+    return 0 if r["ok"] else 1
 
 
 def print_analysis(an, lang: str = "ko") -> None:
